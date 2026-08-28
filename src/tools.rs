@@ -75,6 +75,25 @@ impl Tool {
         let up = c.to_ascii_uppercase().to_string();
         Tool::ALL.into_iter().find(|t| t.shortcut() == up)
     }
+
+    /// Match a just-pressed macroquad key to a tool.
+    pub fn from_keycode(kc: macroquad::prelude::KeyCode) -> Option<Tool> {
+        use macroquad::prelude::KeyCode as K;
+        let c = match kc {
+            K::V => 'V',
+            K::M => 'M',
+            K::B => 'B',
+            K::I => 'I',
+            K::Z => 'Z',
+            K::H => 'H',
+            K::L => 'L',
+            K::R => 'R',
+            K::F => 'F',
+            K::T => 'T',
+            _ => return None,
+        };
+        Tool::from_key(c)
+    }
 }
 
 /// Shared "which tool is active" handle. Clone into the rest of the app.

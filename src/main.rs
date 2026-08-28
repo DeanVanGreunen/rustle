@@ -1,4 +1,5 @@
 mod about;
+mod icon;
 mod nav;
 mod startup;
 mod tools;
@@ -39,7 +40,15 @@ fn open_project(
     ui.set_display(startup.overlay, false);
 }
 
-#[macroquad::main("Rustle")]
+fn window_conf() -> Conf {
+    Conf {
+        window_title: format!("Rustle - v{}", env!("CARGO_PKG_VERSION")).to_owned(),
+        icon: icon::window_icon(),
+        ..Default::default()
+    }
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
     let mut ui = UiTree::new();
 
@@ -117,6 +126,7 @@ async fn main() {
     let fonts = mq_backend::FontBook::new();
     let mut renderer = Renderer::new();
     mq_backend::install(&mut ui, &mut renderer, &fonts);
+    mq_backend::set_text_scale(1.10); // all UI text 10% larger
 
     loop {
         mq_backend::pump_input(&mut ui);
@@ -169,11 +179,16 @@ async fn main() {
         }
 
         // Tool shortcuts (single letters, no modifier held) — not while
-        // the launch dialog is up (typing a project name).
-        let mods = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::LeftSuper);
-        while let Some(c) = get_char_pressed() {
-            if !launching && !mods {
-                if let Some(t) = Tool::from_key(c) {
+        // the launch dialog is up (typing a project name). `pump_input`
+        // has already drained the char queue, so key off raw key presses.
+        let mods = ctrl
+            || is_key_down(KeyCode::LeftSuper)
+            || is_key_down(KeyCode::RightSuper)
+            || is_key_down(KeyCode::LeftAlt)
+            || is_key_down(KeyCode::RightAlt);
+        if !launching && !mods {
+            for kc in get_keys_pressed() {
+                if let Some(t) = Tool::from_keycode(kc) {
                     tool_state.set(t);
                 }
             }
