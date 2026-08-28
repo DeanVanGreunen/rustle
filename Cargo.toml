@@ -1,0 +1,11 @@
+[package]
+name = "rustle"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+macroquad = "0.4.16"
+rustle_ui = { path = "../rustle_ui", features = ["macroquad"] }
+rustle_core = { path = "core" }
+taffy = "0.13.0"
+rfd = "0.15"
