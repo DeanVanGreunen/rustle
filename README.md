@@ -139,4 +139,30 @@ Nothing here is blocking, it's just the next round of polish and features.
 
 ## Licence
 
-Non commercial use only. See the About dialog in the app for the full text.
+The "Software" refers to this app "Rustle"
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the \"Software\"),
+to use, copy, modify, and redistribute the Software, subject to the
+following conditions:
+
+1. The Software and any modified or derivative version of the Software may
+only be used, distributed, or made available for non-commercial purposes.
+
+2. No person or organization may sell, license, rent, lease, sublicense,
+or otherwise commercially exploit the Software or any derivative work
+based substantially on the Software.
+
+3. No person or organization may charge a fee for distributing the
+Software or a derivative work.
+
+4. Modified versions may be distributed, provided that the modified source
+code is made available under these same terms.
+
+5. The original copyright notice and this license must be included in all
+copies or substantial portions of the Software.
+
+6. The Software may not be incorporated into a commercial product or
+service without explicit written permission from the copyright holder.
+
+Copyright Dean Van Greunen 2026

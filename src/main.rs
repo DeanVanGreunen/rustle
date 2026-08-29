@@ -21,6 +21,8 @@ use rustle_ui::prelude::*;
 use rustle_ui::widgets::TextField;
 use rustle_ui::{Color as UiColor, Style as UiStyle};
 
+use crate::about::{BUILD_ID, BUILD_RELEASE_TYPE, VERSION};
+
 /// Install `project` as the live document: sync the nav bar / workspace,
 /// remember it in the recent list, and dismiss the launch overlay.
 fn open_project(
@@ -92,7 +94,7 @@ async fn main() {
     ];
     spawn_nav_bar(&mut ui, root, &nav_state, menu_items);
     nav_state.set_project_name("No Project");
-    nav_state.set_version(format!("v{}", env!("CARGO_PKG_VERSION")));
+    nav_state.set_version(format!("v{} - {} [{}]", VERSION, BUILD_RELEASE_TYPE, BUILD_ID));
 
     // Body: tool strip + workspaces host.
     let mut body_style = UiStyle::row().grow();

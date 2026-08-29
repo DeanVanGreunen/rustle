@@ -9,31 +9,44 @@ use rustle_ui::prelude::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const AUTHOR: &str = "Dean Van Greunen";
+pub const EMAIL: &str = "deanvg9000@gmail.com";
+pub const REPO: &str = "https://github.com/DeanVanGreunen/rustle";
+pub const BUILD_DATE: &str = env!("BUILD_DATE");
+pub const BUILD_RELEASE_TYPE: &str = match option_env!("BUILD_RELEASE_TYPE") {
+    Some(v) => v,
+    None => "Development",
+};
+pub const BUILD_ID: &str = env!("BUILD_ID");
 
-const LICENSE: &str = "\
-Permission is hereby granted, free of charge, to any person obtaining a \
-copy of this software and associated documentation files (the \"Software\"), \
-to use, copy, modify, and redistribute the Software, subject to the \
+const LICENSE: &str = "
+The \"Software\" refers to this app \"Rustle\"
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the \"Software\"),
+to use, copy, modify, and redistribute the Software, subject to the
 following conditions:
 
-1. The Software and any modified or derivative version of the Software may \
+1. The Software and any modified or derivative version of the Software may
 only be used, distributed, or made available for non-commercial purposes.
 
-2. No person or organization may sell, license, rent, lease, sublicense, \
-or otherwise commercially exploit the Software or any derivative work \
+2. No person or organization may sell, license, rent, lease, sublicense,
+or otherwise commercially exploit the Software or any derivative work
 based substantially on the Software.
 
-3. No person or organization may charge a fee for distributing the \
+3. No person or organization may charge a fee for distributing the
 Software or a derivative work.
 
-4. Modified versions may be distributed, provided that the modified source \
+4. Modified versions may be distributed, provided that the modified source
 code is made available under these same terms.
 
-5. The original copyright notice and this license must be included in all \
+5. The original copyright notice and this license must be included in all
 copies or substantial portions of the Software.
 
-6. The Software may not be incorporated into a commercial product or \
-service without explicit written permission from the copyright holder.";
+6. The Software may not be incorporated into a commercial product or
+service without explicit written permission from the copyright holder.
+
+Copyright Dean Van Greunen 2026
+";
 
 const CARD_W: f32 = 480.0;
 const PAD: f32 = 28.0;
@@ -131,14 +144,14 @@ impl Behavior for AboutDialog {
         let (sw, sh) = self.surface;
 
         let title_s = TextStyle { size: 20.0, color: TITLE_C, font: FontId::DEFAULT };
-        let meta_s = TextStyle { size: 13.0, color: DIM_C, font: FontId::DEFAULT };
+        let meta_s = TextStyle { size: 16.0, color: DIM_C, font: FontId::DEFAULT };
         let body_s = TextStyle { size: 12.5, color: BODY_C, font: FontId::DEFAULT };
 
         let text_w = CARD_W - PAD * 2.0;
         let lines = wrap(ctx.renderer, LICENSE, &body_s, text_w);
         let line_h = 17.0;
 
-        let header_h = 30.0 + 22.0 + 20.0; // title + version + author
+        let header_h = 30.0 + 22.0 + 20.0 + 20.0 + 20.0 + 20.0; // title + version + author
         let card_h = PAD + header_h + 14.0 + lines.len() as f32 * line_h + PAD;
 
         let cx = ((sw - CARD_W) * 0.5).max(0.0);
@@ -170,19 +183,44 @@ impl Behavior for AboutDialog {
 
         y += 24.0;
         ctx.renderer
-            .text_styled(&format!("Version {VERSION}"), Vec2 { x: lx, y }, meta_s);
+            .text_styled(&format!("Version: {VERSION}"), Vec2 { x: lx, y }, meta_s);
+        y += 20.0;
+        ctx.renderer
+            .text_styled(&format!("Build Date: {BUILD_DATE}"), Vec2 { x: lx, y }, meta_s);
+        y += 20.0;
+        ctx.renderer
+            .text_styled(&format!("Build Type: {BUILD_RELEASE_TYPE}"), Vec2 { x: lx, y }, meta_s);
+        y += 20.0;
+        ctx.renderer
+            .text_styled(&format!("Build ID: {BUILD_ID}"), Vec2 { x: lx, y }, meta_s);
         y += 20.0;
         ctx.renderer.text_styled(
-            &format!("Created by {AUTHOR}"),
+            &format!("Created by: {AUTHOR}"),
             Vec2 { x: lx, y },
             meta_s,
         );
-
+        y += 20.0;
+        ctx.renderer.text_styled(
+            &format!("Support Email: {EMAIL}"),
+            Vec2 { x: lx, y },
+            meta_s,
+        );
+        y += 20.0;
+        ctx.renderer.text_styled(
+            &format!("Repo: {REPO}"),
+            Vec2 { x: lx, y },
+            meta_s,
+        );
+        y += 20.0;
+        ctx.renderer.text_styled(
+            &format!("LICENSE"),
+            Vec2 { x: lx, y },
+            meta_s,
+        );
         y += 18.0;
         ctx.renderer
             .fill_rect(Rect::new(lx, y, text_w, 1.0), RULE_C);
         y += 16.0;
-
         for line in &lines {
             if !line.is_empty() {
                 ctx.renderer.text_styled(line, Vec2 { x: lx, y }, body_s);
