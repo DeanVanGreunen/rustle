@@ -217,10 +217,10 @@ impl Behavior for AboutDialog {
             Vec2 { x: lx, y },
             meta_s,
         );
-        y += 12.0;
+        y += 4.0;
         ctx.renderer
             .fill_rect(Rect::new(lx, y, text_w, 1.0), RULE_C);
-        y += 12.0;
+        y += 4.0;
         for line in &lines {
             if !line.is_empty() {
                 ctx.renderer.text_styled(line, Vec2 { x: lx, y }, body_s);
