@@ -12,22 +12,7 @@ use rustle_ui::EmptyBehavior;
 mod menu;
 pub use menu::{MenuButton, MenuItem};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorMode {
-    Level,
-    Sprite,
-    Animation,
-}
-
-impl EditorMode {
-    fn label(self) -> &'static str {
-        match self {
-            EditorMode::Level => "Level",
-            EditorMode::Sprite => "Sprite",
-            EditorMode::Animation => "Animation",
-        }
-    }
-}
+pub use rustle_core::EditorMode;
 
 /// Shared nav-bar state. Clone the `Rc` handles into your app so the rest
 /// of the program can read the active mode and flip the saved flag.

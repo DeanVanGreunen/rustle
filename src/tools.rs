@@ -7,111 +7,29 @@
 //! strip is one `Behavior` — it lays out its own buttons, tracks hover,
 //! and draws the tooltip in the `overlay` pass so it floats on top.
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use rustle_ui::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tool {
-    Select,
-    Marquee,
-    Pencil,
-    Eyedropper,
-    Zoom,
-    Move,
-    Line,
-    Rectangle,
-    Fill,
-    Text,
-}
+pub use rustle_core::Tool;
 
-impl Tool {
-    pub const ALL: [Tool; 10] = [
-        Tool::Select,
-        Tool::Marquee,
-        Tool::Pencil,
-        Tool::Eyedropper,
-        Tool::Zoom,
-        Tool::Move,
-        Tool::Line,
-        Tool::Rectangle,
-        Tool::Fill,
-        Tool::Text,
-    ];
+use crate::editor::Editor;
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Tool::Select => "Select",
-            Tool::Marquee => "Marquee",
-            Tool::Pencil => "Pencil",
-            Tool::Eyedropper => "Eyedropper",
-            Tool::Zoom => "Zoom",
-            Tool::Move => "Move",
-            Tool::Line => "Line",
-            Tool::Rectangle => "Rectangle",
-            Tool::Fill => "Bucket Fill",
-            Tool::Text => "Text",
-        }
-    }
-
-    pub fn shortcut(self) -> &'static str {
-        match self {
-            Tool::Select => "V",
-            Tool::Marquee => "M",
-            Tool::Pencil => "B",
-            Tool::Eyedropper => "I",
-            Tool::Zoom => "Z",
-            Tool::Move => "H",
-            Tool::Line => "L",
-            Tool::Rectangle => "R",
-            Tool::Fill => "F",
-            Tool::Text => "T",
-        }
-    }
-
-    /// Match a typed character to a tool (case-insensitive).
-    pub fn from_key(c: char) -> Option<Tool> {
-        let up = c.to_ascii_uppercase().to_string();
-        Tool::ALL.into_iter().find(|t| t.shortcut() == up)
-    }
-
-    /// Match a just-pressed macroquad key to a tool.
-    pub fn from_keycode(kc: macroquad::prelude::KeyCode) -> Option<Tool> {
-        use macroquad::prelude::KeyCode as K;
-        let c = match kc {
-            K::V => 'V',
-            K::M => 'M',
-            K::B => 'B',
-            K::I => 'I',
-            K::Z => 'Z',
-            K::H => 'H',
-            K::L => 'L',
-            K::R => 'R',
-            K::F => 'F',
-            K::T => 'T',
-            _ => return None,
-        };
-        Tool::from_key(c)
-    }
-}
-
-/// Shared "which tool is active" handle. Clone into the rest of the app.
-#[derive(Clone)]
-pub struct ToolState {
-    pub active: Rc<Cell<Tool>>,
-}
-
-impl ToolState {
-    pub fn new() -> Self {
-        Self { active: Rc::new(Cell::new(Tool::Select)) }
-    }
-    pub fn get(&self) -> Tool {
-        self.active.get()
-    }
-    pub fn set(&self, t: Tool) {
-        self.active.set(t);
-    }
+/// Match a just-pressed macroquad key to a tool.
+pub fn tool_from_keycode(kc: macroquad::prelude::KeyCode) -> Option<Tool> {
+    use macroquad::prelude::KeyCode as K;
+    let c = match kc {
+        K::V => 'V',
+        K::M => 'M',
+        K::B => 'B',
+        K::I => 'I',
+        K::Z => 'Z',
+        K::H => 'H',
+        K::L => 'L',
+        K::R => 'R',
+        K::F => 'F',
+        K::T => 'T',
+        _ => return None,
+    };
+    Tool::from_key(c)
 }
 
 // --- layout / colours -------------------------------------------------
@@ -132,7 +50,7 @@ const TIP_DIM: Color = Color::hex(0x9fb0c8);
 // --- the widget ------------------------------------------------------
 
 struct ToolBar {
-    state: ToolState,
+    editor: Editor,
     icons: Vec<ImageData>,
     hovered: Option<usize>,
     abs: (f32, f32),
@@ -171,7 +89,7 @@ impl Behavior for ToolBar {
             }
             PointerEvent::Down { button: MouseButton::Left, x, y } => {
                 if let Some(i) = self.hit(x - b.x, y - b.y) {
-                    self.state.set(Tool::ALL[i]);
+                    self.editor.set_tool(Tool::ALL[i]);
                     ctx.stop_propagation();
                 }
             }
@@ -180,7 +98,7 @@ impl Behavior for ToolBar {
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
-        let active = self.state.get();
+        let active = self.editor.tool();
         let icon_off = (BTN - ICON_DRAW) * 0.5;
         let (w, h) = ctx.size();
 
@@ -237,9 +155,8 @@ impl Behavior for ToolBar {
     }
 }
 
-/// Spawn the tool strip filling `column`. Returns the shared tool state.
-pub fn spawn_tool_panel(ui: &mut UiTree, column: NodeId) -> ToolState {
-    let state = ToolState::new();
+/// Spawn the tool strip filling `column`.
+pub fn spawn_tool_panel(ui: &mut UiTree, column: NodeId, editor: &Editor) {
     let icons = Tool::ALL.into_iter().map(render_icon).collect();
 
     let mut style = Style::default();
@@ -251,11 +168,9 @@ pub fn spawn_tool_panel(ui: &mut UiTree, column: NodeId) -> ToolState {
     ui.spawn(
         column,
         style,
-        ToolBar { state: state.clone(), icons, hovered: None, abs: (0.0, 0.0) },
+        ToolBar { editor: editor.clone(), icons, hovered: None, abs: (0.0, 0.0) },
     )
     .unwrap();
-
-    state
 }
 
 // --- icon rasteriser -------------------------------------------------
