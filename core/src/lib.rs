@@ -103,7 +103,8 @@ pub struct Tile {
     pub origin: Point,
 }
 
-/// A background image definition.
+/// A background image definition. Like a [`Tile`] it owns a base image
+/// plus any number of animations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Background {
     #[serde(default)]
@@ -112,9 +113,14 @@ pub struct Background {
     pub width: u32,
     pub height: u32,
     pub origin: Point,
+    #[serde(default)]
+    pub base_frame: Option<BaseFrameId>,
+    #[serde(default)]
+    pub animations: Vec<AnimationId>,
 }
 
-/// An accessory image definition.
+/// An accessory image definition. Like a [`Tile`] it owns a base image
+/// plus any number of animations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Accessory {
     #[serde(default)]
@@ -123,6 +129,10 @@ pub struct Accessory {
     pub width: u32,
     pub height: u32,
     pub origin: Point,
+    #[serde(default)]
+    pub base_frame: Option<BaseFrameId>,
+    #[serde(default)]
+    pub animations: Vec<AnimationId>,
 }
 
 /// An animation: an ordered (linked) list of frame ids.
@@ -236,19 +246,19 @@ impl Project {
             ..Default::default()
         };
 
-        let layer = p.add_layer(Layer::blank(64, 64));
-        p.add_base_frame(BaseFrame {
-            width: 64,
-            height: 64,
-            layers: vec![layer],
-            ..Default::default()
-        });
-        let frame = p.add_frame(Frame { layers: vec![layer], delay_ms: 100, ..Default::default() });
         let level = p.add_level("Level 1");
-
-        p.session.active.frame = Some(frame);
-        p.session.active.layer = Some(layer);
         p.session.active.level = Some(level);
+
+        // One starter tile with a base image so the sprite workspace has
+        // something to show.
+        let tile = p.new_tile();
+        let entity = SpriteEntity::Tile(tile);
+        let layer = p.add_layer_to_base(entity);
+        let base = p.entity_base_frame(entity).unwrap();
+
+        p.session.active.sprite = Some(entity);
+        p.session.active.canvas = SpriteCanvas::Base(base);
+        p.session.active.layer = Some(layer);
         p.session.selection = Selection::Layer(layer);
         p
     }
@@ -381,6 +391,213 @@ impl Project {
         })
     }
 
+    // --- sprite / animation workspace helpers ------------------------
+
+    pub fn entity_name(&self, e: SpriteEntity) -> String {
+        match e {
+            SpriteEntity::Tile(k) => self.tiles.get(k).map(|t| t.name.clone()),
+            SpriteEntity::Background(k) => self.backgrounds.get(k).map(|b| b.name.clone()),
+            SpriteEntity::Accessory(k) => self.accessories.get(k).map(|a| a.name.clone()),
+        }
+        .unwrap_or_default()
+    }
+
+    pub fn entity_size(&self, e: SpriteEntity) -> (u32, u32) {
+        let d = match e {
+            SpriteEntity::Tile(k) => self.tiles.get(k).map(|t| (t.width, t.height)),
+            SpriteEntity::Background(k) => self.backgrounds.get(k).map(|b| (b.width, b.height)),
+            SpriteEntity::Accessory(k) => self.accessories.get(k).map(|a| (a.width, a.height)),
+        };
+        let (w, h) = d.unwrap_or((16, 16));
+        (w.max(1), h.max(1))
+    }
+
+    pub fn entity_exists(&self, e: SpriteEntity) -> bool {
+        match e {
+            SpriteEntity::Tile(k) => self.tiles.contains_key(k),
+            SpriteEntity::Background(k) => self.backgrounds.contains_key(k),
+            SpriteEntity::Accessory(k) => self.accessories.contains_key(k),
+        }
+    }
+
+    pub fn entity_base_frame(&self, e: SpriteEntity) -> Option<BaseFrameId> {
+        match e {
+            SpriteEntity::Tile(k) => self.tiles.get(k)?.base_frame,
+            SpriteEntity::Background(k) => self.backgrounds.get(k)?.base_frame,
+            SpriteEntity::Accessory(k) => self.accessories.get(k)?.base_frame,
+        }
+    }
+
+    pub fn entity_animations(&self, e: SpriteEntity) -> Vec<AnimationId> {
+        match e {
+            SpriteEntity::Tile(k) => self.tiles.get(k).map(|t| t.animations.clone()),
+            SpriteEntity::Background(k) => self.backgrounds.get(k).map(|b| b.animations.clone()),
+            SpriteEntity::Accessory(k) => self.accessories.get(k).map(|a| a.animations.clone()),
+        }
+        .unwrap_or_default()
+    }
+
+    fn set_entity_base_frame(&mut self, e: SpriteEntity, bf: BaseFrameId) {
+        match e {
+            SpriteEntity::Tile(k) => {
+                if let Some(t) = self.tiles.get_mut(k) {
+                    t.base_frame = Some(bf);
+                }
+            }
+            SpriteEntity::Background(k) => {
+                if let Some(b) = self.backgrounds.get_mut(k) {
+                    b.base_frame = Some(bf);
+                }
+            }
+            SpriteEntity::Accessory(k) => {
+                if let Some(a) = self.accessories.get_mut(k) {
+                    a.base_frame = Some(bf);
+                }
+            }
+        }
+    }
+
+    fn push_entity_animation(&mut self, e: SpriteEntity, a: AnimationId) {
+        match e {
+            SpriteEntity::Tile(k) => {
+                if let Some(t) = self.tiles.get_mut(k) {
+                    t.animations.push(a);
+                }
+            }
+            SpriteEntity::Background(k) => {
+                if let Some(b) = self.backgrounds.get_mut(k) {
+                    b.animations.push(a);
+                }
+            }
+            SpriteEntity::Accessory(k) => {
+                if let Some(x) = self.accessories.get_mut(k) {
+                    x.animations.push(a);
+                }
+            }
+        }
+    }
+
+    /// Get (creating if needed) the entity's base image frame.
+    pub fn ensure_base_frame(&mut self, e: SpriteEntity) -> BaseFrameId {
+        if let Some(bf) = self.entity_base_frame(e) {
+            return bf;
+        }
+        let (w, h) = self.entity_size(e);
+        let bf = self.add_base_frame(BaseFrame { width: w, height: h, ..Default::default() });
+        self.set_entity_base_frame(e, bf);
+        bf
+    }
+
+    pub fn add_layer_to_base(&mut self, e: SpriteEntity) -> LayerId {
+        let bf = self.ensure_base_frame(e);
+        let (w, h) = self.entity_size(e);
+        let l = self.add_layer(Layer::blank(w, h));
+        if let Some(b) = self.base_frame.get_mut(bf) {
+            b.layers.push(l);
+        }
+        l
+    }
+
+    pub fn add_group_to_base(&mut self, e: SpriteEntity) -> GroupId {
+        let bf = self.ensure_base_frame(e);
+        let g = self.add_group(Group { visible: true, ..Default::default() });
+        if let Some(b) = self.base_frame.get_mut(bf) {
+            b.groups.push(g);
+        }
+        g
+    }
+
+    /// Create an animation for the entity, seeded with one frame + layer.
+    pub fn add_animation_to_entity(&mut self, e: SpriteEntity) -> AnimationId {
+        let (w, h) = self.entity_size(e);
+        let layer = self.add_layer(Layer::blank(w, h));
+        let frame = self.add_frame(Frame { layers: vec![layer], delay_ms: 100, ..Default::default() });
+        let anim = self.add_animation(Animation::default());
+        if let Some(a) = self.animations.get_mut(anim) {
+            a.frames.push_back(frame);
+        }
+        self.push_entity_animation(e, anim);
+        anim
+    }
+
+    pub fn add_frame_to_animation(&mut self, anim: AnimationId) -> Option<FrameId> {
+        let (w, h) = self
+            .animations
+            .get(anim)?
+            .frames
+            .front()
+            .and_then(|f| self.frames.get(*f))
+            .and_then(|f| f.layers.first().and_then(|l| self.layers.get(*l)))
+            .map(|l| (l.width, l.height))
+            .unwrap_or((16, 16));
+        let layer = self.add_layer(Layer::blank(w, h));
+        let frame = self.add_frame(Frame { layers: vec![layer], delay_ms: 100, ..Default::default() });
+        self.animations.get_mut(anim)?.frames.push_back(frame);
+        Some(frame)
+    }
+
+    pub fn add_layer_to_group(&mut self, g: GroupId) -> Option<LayerId> {
+        let l = self.add_layer(Layer::blank(16, 16));
+        self.groups.get_mut(g)?.layers.push(l);
+        Some(l)
+    }
+
+    pub fn add_group_to_group(&mut self, g: GroupId) -> Option<GroupId> {
+        let child = self.add_group(Group { visible: true, ..Default::default() });
+        self.groups.get_mut(g)?.groups.push(child);
+        Some(child)
+    }
+
+    /// Layers + groups of the currently-shown sprite canvas.
+    pub fn canvas_layers_groups(&self) -> (Vec<LayerId>, Vec<GroupId>) {
+        match self.session.active.canvas {
+            SpriteCanvas::Base(k) => self
+                .base_frame
+                .get(k)
+                .map(|b| (b.layers.clone(), b.groups.clone()))
+                .unwrap_or_default(),
+            SpriteCanvas::Frame(k) => self
+                .frames
+                .get(k)
+                .map(|f| (f.layers.clone(), f.groups.clone()))
+                .unwrap_or_default(),
+            SpriteCanvas::None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    pub fn canvas_size(&self) -> (u32, u32) {
+        let (layers, _) = self.canvas_layers_groups();
+        layers
+            .iter()
+            .filter_map(|l| self.layers.get(*l))
+            .next()
+            .map(|l| (l.width.max(1), l.height.max(1)))
+            .or_else(|| self.session.active.sprite.map(|e| self.entity_size(e)))
+            .unwrap_or((16, 16))
+    }
+
+    pub fn canvas_add_layer(&mut self) -> Option<LayerId> {
+        let (w, h) = self.canvas_size();
+        let l = self.add_layer(Layer::blank(w, h));
+        match self.session.active.canvas {
+            SpriteCanvas::Base(k) => self.base_frame.get_mut(k)?.layers.push(l),
+            SpriteCanvas::Frame(k) => self.frames.get_mut(k)?.layers.push(l),
+            SpriteCanvas::None => return None,
+        }
+        self.session.active.layer = Some(l);
+        Some(l)
+    }
+
+    pub fn canvas_add_group(&mut self) -> Option<GroupId> {
+        let g = self.add_group(Group { visible: true, ..Default::default() });
+        match self.session.active.canvas {
+            SpriteCanvas::Base(k) => self.base_frame.get_mut(k)?.groups.push(g),
+            SpriteCanvas::Frame(k) => self.frames.get_mut(k)?.groups.push(g),
+            SpriteCanvas::None => return None,
+        }
+        Some(g)
+    }
+
     /// Backfill a `Uuid` on any entity that is missing one (old files).
     pub fn ensure_ids(&mut self) {
         macro_rules! fill {
@@ -446,6 +663,12 @@ impl Project {
         for (_, t) in self.tiles.iter_mut() {
             t.animations.retain(|&x| x != k);
         }
+        for (_, b) in self.backgrounds.iter_mut() {
+            b.animations.retain(|&x| x != k);
+        }
+        for (_, a) in self.accessories.iter_mut() {
+            a.animations.retain(|&x| x != k);
+        }
         self.validate_session();
     }
 
@@ -504,6 +727,30 @@ impl Project {
         if s.active.animation.is_some_and(|k| !self.animations.contains_key(k)) {
             s.active.animation = self.animations.keys().next();
         }
+        let sprite_ok = match s.active.sprite {
+            None => true,
+            Some(SpriteEntity::Tile(k)) => self.tiles.contains_key(k),
+            Some(SpriteEntity::Background(k)) => self.backgrounds.contains_key(k),
+            Some(SpriteEntity::Accessory(k)) => self.accessories.contains_key(k),
+        };
+        if !sprite_ok {
+            s.active.sprite = self
+                .tiles
+                .keys()
+                .next()
+                .map(SpriteEntity::Tile)
+                .or_else(|| self.backgrounds.keys().next().map(SpriteEntity::Background))
+                .or_else(|| self.accessories.keys().next().map(SpriteEntity::Accessory));
+        }
+        match s.active.canvas {
+            SpriteCanvas::Base(k) if !self.base_frame.contains_key(k) => {
+                s.active.canvas = SpriteCanvas::None
+            }
+            SpriteCanvas::Frame(k) if !self.frames.contains_key(k) => {
+                s.active.canvas = SpriteCanvas::None
+            }
+            _ => {}
+        }
         let sel_ok = match s.selection {
             Selection::None => true,
             Selection::Frame(k) => self.frames.contains_key(k),
@@ -522,6 +769,10 @@ impl Project {
                 .levels
                 .get(level)
                 .is_some_and(|l| index < l.backgrounds.len()),
+            Selection::LevelAccessory { level, index } => self
+                .levels
+                .get(level)
+                .is_some_and(|l| index < l.accessories.len()),
         };
         if !sel_ok {
             self.session.selection = Selection::None;

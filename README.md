@@ -30,12 +30,17 @@ When Rustle opens you get a launch dialog. Type a project name and hit New to pi
 where the `.rustle` file goes, or click one of your recent projects to reopen it.
 Recent projects are remembered in `%APPDATA%/Rustle/recent.json`.
 
-Once a project is open you land in one of three workspaces, switched from the tabs
+Once a project is open you land in one of two workspaces, switched from the tabs
 in the top bar:
 
 - Level, for placing tiles, backgrounds and accessories on a grid
-- Sprite, for painting individual frames
-- Animation, for stringing frames together with per frame timing
+- Sprite / Animation, for building the artwork itself
+
+In the Sprite / Animation workspace the outline lists your backgrounds, tiles and
+accessories. Each of those owns a base image made of layers and groups, plus any
+number of animations, and each animation is a list of frames that also have their
+own layers and groups. The base image is the still artwork, the animations are
+optional motion on top of it.
 
 Every workspace has the same shape. The tool strip is on the far left, then a
 column with the current tool's options across the top, the main canvas in the
@@ -51,10 +56,10 @@ workspace and is where you add and remove things.
 - New, open and save projects as `.rustle` files (pretty printed JSON)
 - Save As to a new location, and a Project Properties dialog to rename the project
   and see its file path, format version and entity counts
-- Import a PNG, JPG or BMP. In Sprite or Animation mode it comes in as a new layer,
-  in Level mode it becomes a new tile definition
-- Export a PNG. Sprite mode writes the current frame, Animation mode writes a
-  horizontal spritesheet of the active animation, Level mode writes a flat render
+- Import a PNG, JPG or BMP. In the Sprite / Animation workspace it drops onto the
+  canvas you have open, in Level mode it becomes a new tile definition
+- Export a PNG. With an animation open it writes a horizontal spritesheet,
+  otherwise it writes the open canvas, and Level mode writes a flat render
 - Recent projects list with automatic dedupe
 
 Every entity (layer, group, frame, tile, background, accessory, animation, level)
@@ -101,10 +106,12 @@ swatch row you can add colours to. The eyedropper feeds straight into it.
 
 ### Animation
 
-The Animation workspace has a timeline strip. It shows the frames of the active
-animation as cells with their delay, lets you jump to a frame by clicking, drag
-cells to reorder them, add a frame with the plus button, and remove the current
-frame with Delete. Play and loop buttons run the animation in the main viewport.
+When you open an animation from the outline, a timeline strip appears at the
+bottom of the Sprite / Animation workspace. It shows the frames of that animation
+as cells with their delay, lets you jump to a frame by clicking, drag cells to
+reorder them, add a frame with the plus button, and remove the current frame with
+Delete. Play and loop buttons run the animation in the main viewport and the
+preview.
 
 ## What's left to do
 

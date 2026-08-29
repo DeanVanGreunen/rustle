@@ -247,7 +247,7 @@ pub fn spawn_nav_bar(
     ui.spawn(bar, Style::default().sized(22.0, 22.0), MenuButton::new(menu_items))
         .unwrap();
 
-    for mode in [EditorMode::Level, EditorMode::Sprite, EditorMode::Animation] {
+    for mode in EditorMode::ALL {
         ui.spawn(
             bar,
             Style::default(),

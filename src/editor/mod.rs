@@ -1,5 +1,5 @@
-//! The editor workspaces (Sprite / Animation / Level) shown in the middle
-//! column below the nav bar.
+//! The editor workspaces (Level, and combined Sprite / Animation) shown
+//! in the middle column below the nav bar.
 //!
 //! Every panel is a custom self-drawing [`Behavior`] that reads shared
 //! state each frame via the cloneable [`Editor`] context. The only real
@@ -66,6 +66,15 @@ pub enum MenuAction {
 }
 
 const HISTORY_MAX: usize = 80;
+
+/// Point `active.layer` at the first layer of the current canvas if the
+/// current one isn't part of it.
+fn sync_active_layer(p: &mut Project) {
+    let (layers, _) = p.canvas_layers_groups();
+    if p.session.active.layer.is_none_or(|k| !layers.contains(&k)) {
+        p.session.active.layer = layers.first().copied();
+    }
+}
 
 /// Undo / redo ring. Snapshots are full `Project` clones; edits within
 /// one "generation" (a mouse gesture or key press) coalesce into a
@@ -238,11 +247,40 @@ impl Editor {
         self.edit_session(|s| s.selection = sel);
     }
 
+    /// Open a tile / background / accessory in the Sprite workspace and
+    /// show its base image.
+    pub fn open_entity(&self, entity: rustle_core::SpriteEntity) {
+        self.edit(|p| {
+            let base = p.ensure_base_frame(entity);
+            p.session.active.sprite = Some(entity);
+            p.session.active.canvas = rustle_core::SpriteCanvas::Base(base);
+            p.session.active.animation = None;
+            p.session.selection = match entity {
+                rustle_core::SpriteEntity::Tile(k) => Selection::Tile(k),
+                rustle_core::SpriteEntity::Background(k) => Selection::Background(k),
+                rustle_core::SpriteEntity::Accessory(k) => Selection::Accessory(k),
+            };
+            sync_active_layer(p);
+        });
+    }
+
+    pub fn show_canvas(&self, canvas: rustle_core::SpriteCanvas) {
+        self.edit(|p| {
+            p.session.active.canvas = canvas;
+            if let rustle_core::SpriteCanvas::Frame(f) = canvas {
+                p.session.active.frame = Some(f);
+            }
+            sync_active_layer(p);
+        });
+    }
+
     /// Set the shown frame during animation playback: refreshes the
     /// viewport but does not touch history or the dirty flag.
     pub fn set_playback_frame(&self, f: rustle_core::FrameId) {
         if let Some(p) = self.app.borrow_mut().as_mut() {
-            if p.session.active.frame != Some(f) {
+            let want = rustle_core::SpriteCanvas::Frame(f);
+            if p.session.active.canvas != want {
+                p.session.active.canvas = want;
                 p.session.active.frame = Some(f);
                 self.revision.set(self.revision.get().wrapping_add(1));
             }
@@ -365,6 +403,13 @@ impl Editor {
                         }
                     }
                 }
+                Selection::LevelAccessory { level, index } => {
+                    if let Some(l) = p.levels.get_mut(level) {
+                        if index < l.accessories.len() {
+                            l.accessories.remove(index);
+                        }
+                    }
+                }
                 Selection::None => {}
             }
             p.session.selection = Selection::None;
@@ -411,10 +456,10 @@ fn grow_row() -> Style {
     s
 }
 
-/// Build the three workspaces as children of `parent`. Returns their
-/// root node ids in [`EditorMode::ALL`] order so the caller can toggle
-/// visibility with `ui.set_display`.
-pub fn spawn_workspaces(ui: &mut UiTree, parent: NodeId, editor: &Editor) -> [NodeId; 3] {
+/// Build the workspaces as children of `parent`. Returns their root node
+/// ids in [`EditorMode::ALL`] order so the caller can toggle visibility
+/// with `ui.set_display`.
+pub fn spawn_workspaces(ui: &mut UiTree, parent: NodeId, editor: &Editor) -> [NodeId; 2] {
     EditorMode::ALL.map(|mode| spawn_workspace(ui, parent, editor, mode))
 }
 
@@ -465,7 +510,7 @@ fn spawn_workspace(ui: &mut UiTree, parent: NodeId, editor: &Editor, mode: Edito
     ui.spawn(mid, fixed_row(DETAILS_H), ViewportDetails::new(editor.clone()))
         .unwrap();
 
-    if mode == EditorMode::Animation {
+    if mode == EditorMode::Sprite {
         ui.spawn(
             mid,
             fixed_row(66.0),

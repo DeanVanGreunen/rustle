@@ -10,7 +10,7 @@ use rustle_core::{
 use rustle_ui::prelude::*;
 use rustle_ui::widgets::ViewportContent;
 
-use super::render::composite_frame;
+use super::render::composite_canvas;
 use super::theme::*;
 use super::Editor;
 
@@ -109,12 +109,7 @@ impl MainViewport {
         }
         self.cache_rev = rev;
         self.cache = None;
-        let Some(frame) = self.editor.session(|s| s.active.frame).flatten() else {
-            return;
-        };
-        if let Some(Some((w, h, buf))) =
-            self.editor.with_project(|p| composite_frame(p, frame))
-        {
+        if let Some(Some((w, h, buf))) = self.editor.with_project(composite_canvas) {
             self.canvas = (w, h);
             self.cache = Some(ImageData::from_rgba(w, h, buf));
         }
@@ -311,14 +306,13 @@ impl MainViewport {
                 }
                 Selection::Accessory(ak) => {
                     let (w, h) = p.accessories.get(ak).map(|a| (a.width.max(1), a.height.max(1))).unwrap_or((16, 16));
-                    p.levels[lvl].accessories.push(LevelAccessory { accessory: ak, x, y, width: w, height: h });
-                    Selection::None
+                    let l = &mut p.levels[lvl];
+                    l.accessories.push(LevelAccessory { accessory: ak, x, y, width: w, height: h });
+                    Selection::LevelAccessory { level: lvl, index: l.accessories.len() - 1 }
                 }
                 _ => return,
             };
-            if placed != Selection::None {
-                p.session.selection = placed;
-            }
+            p.session.selection = placed;
         });
     }
 
@@ -343,6 +337,12 @@ impl MainViewport {
                 if let Some(b) = p.levels.get_mut(level).and_then(|l| l.backgrounds.get_mut(index)) {
                     b.x = nx;
                     b.y = ny;
+                }
+            }
+            Selection::LevelAccessory { level, index } => {
+                if let Some(a) = p.levels.get_mut(level).and_then(|l| l.accessories.get_mut(index)) {
+                    a.x = nx;
+                    a.y = ny;
                 }
             }
             _ => {}
@@ -419,9 +419,15 @@ impl MainViewport {
                     stroke(r, rect, ACCENT);
                 }
             }
-            for a in &level.accessories {
+            for (i, a) in level.accessories.iter().enumerate() {
                 let rect = world(a.x, a.y, a.width, a.height);
                 r.fill_rect(rect, Color::rgba(0.8, 0.6, 0.2, 0.6));
+                if let Some(acc) = p.accessories.get(a.accessory) {
+                    text(r, &acc.name, rect.x + 3.0, rect.y + 2.0, 10.0, Color::WHITE);
+                }
+                if sel == (Selection::LevelAccessory { level: lvl_key, index: i }) {
+                    stroke(r, rect, ACCENT);
+                }
             }
         });
     }
@@ -502,6 +508,9 @@ fn selected_origin(p: &Project) -> Option<(f32, f32)> {
         }
         Selection::LevelBackground { level, index } => {
             p.levels.get(level)?.backgrounds.get(index).map(|b| (b.x, b.y))
+        }
+        Selection::LevelAccessory { level, index } => {
+            p.levels.get(level)?.accessories.get(index).map(|a| (a.x, a.y))
         }
         _ => None,
     }
@@ -777,6 +786,11 @@ impl MainViewport {
                 let sel = self.editor.with_project(|p| {
                     let lvl_key = p.session.active.level?;
                     let level = p.levels.get(lvl_key)?;
+                    for (i, a) in level.accessories.iter().enumerate().rev() {
+                        if tx >= a.x && ty >= a.y && tx < a.x + a.width as f32 && ty < a.y + a.height as f32 {
+                            return Some(Selection::LevelAccessory { level: lvl_key, index: i });
+                        }
+                    }
                     for (i, t) in level.tiles.iter().enumerate().rev() {
                         if tx >= t.x && ty >= t.y && tx < t.x + t.width as f32 && ty < t.y + t.height as f32 {
                             return Some(Selection::LevelTile { level: lvl_key, index: i });

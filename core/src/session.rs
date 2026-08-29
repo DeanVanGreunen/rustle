@@ -5,26 +5,46 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccessoryId, AnimationId, BackgroundId, FrameId, GroupId, LayerId, LevelId, TileId,
+    AccessoryId, AnimationId, BackgroundId, BaseFrameId, FrameId, GroupId, LayerId, LevelId, TileId,
 };
 
-/// Which editor workspace is shown.
+/// A drawable definition in the Sprite / Animation workspace: a tile,
+/// background or accessory. Each owns a base image plus animations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpriteEntity {
+    Tile(TileId),
+    Background(BackgroundId),
+    Accessory(AccessoryId),
+}
+
+/// Which canvas the Sprite / Animation viewport is painting.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum SpriteCanvas {
+    #[default]
+    None,
+    /// The entity's base image.
+    Base(BaseFrameId),
+    /// A single animation frame.
+    Frame(FrameId),
+}
+
+/// Which editor workspace is shown. The old separate "Animation" mode is
+/// folded into "Sprite / Animation".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum EditorMode {
     #[default]
     Level,
+    #[serde(alias = "Animation")]
     Sprite,
-    Animation,
 }
 
 impl EditorMode {
-    pub const ALL: [EditorMode; 3] = [EditorMode::Level, EditorMode::Sprite, EditorMode::Animation];
+    pub const ALL: [EditorMode; 2] = [EditorMode::Level, EditorMode::Sprite];
 
     pub fn label(self) -> &'static str {
         match self {
             EditorMode::Level => "Level",
-            EditorMode::Sprite => "Sprite",
-            EditorMode::Animation => "Animation",
+            EditorMode::Sprite => "Sprite / Animation",
         }
     }
 }
@@ -248,6 +268,7 @@ pub enum Selection {
     Level(LevelId),
     LevelTile { level: LevelId, index: usize },
     LevelBackground { level: LevelId, index: usize },
+    LevelAccessory { level: LevelId, index: usize },
 }
 
 /// What each workspace is currently editing.
@@ -257,6 +278,12 @@ pub struct ActiveTargets {
     pub layer: Option<LayerId>,
     pub animation: Option<AnimationId>,
     pub level: Option<LevelId>,
+    /// The opened sprite/background/accessory in the Sprite workspace.
+    #[serde(default)]
+    pub sprite: Option<SpriteEntity>,
+    /// Which of that entity's canvases is shown.
+    #[serde(default)]
+    pub canvas: SpriteCanvas,
 }
 
 // --- viewport / colours ------------------------------------------

@@ -166,11 +166,28 @@ impl PropertiesForm {
                 if let Some(l) = p.levels.get(level) {
                     if let Some(b) = l.backgrounds.get(index) {
                         f.heading("Placed Background");
+                        let name = p.backgrounds.get(b.background).map(|x| x.name.clone()).unwrap_or_default();
+                        f.readonly("Background", if name.is_empty() { "-".into() } else { name });
                         let (bx, by, bw, bh) = (b.x, b.y, b.width, b.height);
                         f.stepper("X", bx as i64, -100000, 100000, 1, move |p, v| set_lb(p, level, index, |b| b.x = v as f32));
                         f.stepper("Y", by as i64, -100000, 100000, 1, move |p, v| set_lb(p, level, index, |b| b.y = v as f32));
                         f.stepper("Width", bw as i64, 1, 8192, 1, move |p, v| set_lb(p, level, index, |b| b.width = v as u32));
                         f.stepper("Height", bh as i64, 1, 8192, 1, move |p, v| set_lb(p, level, index, |b| b.height = v as u32));
+                    }
+                }
+            }
+
+            Selection::LevelAccessory { level, index } => {
+                if let Some(l) = p.levels.get(level) {
+                    if let Some(a) = l.accessories.get(index) {
+                        f.heading("Placed Accessory");
+                        let name = p.accessories.get(a.accessory).map(|x| x.name.clone()).unwrap_or_default();
+                        f.readonly("Accessory", if name.is_empty() { "-".into() } else { name });
+                        let (ax, ay, aw, ah) = (a.x, a.y, a.width, a.height);
+                        f.stepper("X", ax as i64, -100000, 100000, 1, move |p, v| set_la(p, level, index, |a| a.x = v as f32));
+                        f.stepper("Y", ay as i64, -100000, 100000, 1, move |p, v| set_la(p, level, index, |a| a.y = v as f32));
+                        f.stepper("Width", aw as i64, 1, 8192, 1, move |p, v| set_la(p, level, index, |a| a.width = v as u32));
+                        f.stepper("Height", ah as i64, 1, 8192, 1, move |p, v| set_la(p, level, index, |a| a.height = v as u32));
                     }
                 }
             }
@@ -210,6 +227,14 @@ fn set_lb(p: &mut Project, level: rustle_core::LevelId, i: usize, f: impl FnOnce
     if let Some(l) = p.levels.get_mut(level) {
         if let Some(b) = l.backgrounds.get_mut(i) {
             f(b);
+        }
+    }
+}
+
+fn set_la(p: &mut Project, level: rustle_core::LevelId, i: usize, f: impl FnOnce(&mut rustle_core::LevelAccessory)) {
+    if let Some(l) = p.levels.get_mut(level) {
+        if let Some(a) = l.accessories.get_mut(i) {
+            f(a);
         }
     }
 }

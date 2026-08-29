@@ -3,7 +3,7 @@
 
 use std::cell::Cell;
 
-use rustle_core::{FrameId, Selection};
+use rustle_core::{FrameId, Selection, SpriteCanvas};
 use rustle_ui::prelude::*;
 
 use super::theme::*;
@@ -58,13 +58,21 @@ impl AnimationTimeline {
                 }
             }
             p.session.active.frame = Some(f);
+            p.session.active.canvas = SpriteCanvas::Frame(f);
             p.session.selection = Selection::Frame(f);
         });
     }
 
+    fn active_frame(p: &rustle_core::Project) -> Option<FrameId> {
+        match p.session.active.canvas {
+            SpriteCanvas::Frame(f) => Some(f),
+            _ => p.session.active.frame,
+        }
+    }
+
     fn remove_active(&self) {
         self.editor.edit(|p| {
-            if let (Some(ak), Some(fk)) = (p.session.active.animation, p.session.active.frame) {
+            if let (Some(ak), Some(fk)) = (p.session.active.animation, Self::active_frame(p)) {
                 if let Some(a) = p.animations.get_mut(ak) {
                     a.frames = a.frames.iter().copied().filter(|&x| x != fk).collect();
                 }
@@ -90,6 +98,7 @@ impl AnimationTimeline {
         self.playing.set(false);
         self.editor.edit(|p| {
             p.session.active.frame = Some(f);
+            p.session.active.canvas = SpriteCanvas::Frame(f);
             p.session.selection = Selection::Frame(f);
         });
     }
@@ -167,7 +176,7 @@ impl Behavior for AnimationTimeline {
 
         // Frame cells.
         let frames = self.frames();
-        let active = self.editor.session(|s| s.active.frame).flatten();
+        let active = self.editor.with_project(Self::active_frame).flatten();
         r.push_clip(Rect::new(CTRL_W, 0.0, w - CTRL_W, h));
         let mut x = CTRL_W + PAD - self.scroll.get();
         for (i, (f, delay)) in frames.iter().enumerate() {

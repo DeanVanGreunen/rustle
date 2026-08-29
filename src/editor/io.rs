@@ -1,8 +1,10 @@
 //! Import / export: PNG in and out, driven by the nav menu actions.
 
-use rustle_core::{BaseFrame, EditorMode, Frame, Layer, Selection, Tile, FILE_EXT};
+use rustle_core::{
+    BaseFrame, EditorMode, Layer, Selection, SpriteCanvas, SpriteEntity, Tile, FILE_EXT,
+};
 
-use super::render::composite_frame;
+use super::render::{composite_canvas, composite_frame};
 use super::Editor;
 
 /// Prompt for a new `.rustle` path, repoint the project, and save.
@@ -67,6 +69,7 @@ pub fn import_image(editor: &Editor) {
         let layer_id = p.add_layer(Layer { width: w, height: h, pixels, visible: true, ..Default::default() });
 
         if p.session.mode == EditorMode::Level {
+            // New tile definition with the image as its base image.
             let bf = p.add_base_frame(BaseFrame { width: w, height: h, layers: vec![layer_id], ..Default::default() });
             let tile = p.add_tile(Tile {
                 name,
@@ -76,15 +79,27 @@ pub fn import_image(editor: &Editor) {
                 ..Default::default()
             });
             p.session.selection = Selection::Tile(tile);
-        } else if let Some(frame) = p.session.active.frame {
-            if let Some(f) = p.frames.get_mut(frame) {
-                f.layers.push(layer_id);
-            }
-            p.session.active.layer = Some(layer_id);
-            p.session.selection = Selection::Layer(layer_id);
         } else {
-            let frame = p.add_frame(Frame { layers: vec![layer_id], delay_ms: 100, ..Default::default() });
-            p.session.active.frame = Some(frame);
+            // Drop it onto whatever sprite canvas is open, or a new tile.
+            match p.session.active.canvas {
+                SpriteCanvas::Base(k) => {
+                    if let Some(b) = p.base_frame.get_mut(k) {
+                        b.layers.push(layer_id);
+                    }
+                }
+                SpriteCanvas::Frame(k) => {
+                    if let Some(f) = p.frames.get_mut(k) {
+                        f.layers.push(layer_id);
+                    }
+                }
+                SpriteCanvas::None => {
+                    let bf = p.add_base_frame(BaseFrame { width: w, height: h, layers: vec![layer_id], ..Default::default() });
+                    let tile = p.add_tile(Tile { name, width: w, height: h, base_frame: Some(bf), ..Default::default() });
+                    let e = SpriteEntity::Tile(tile);
+                    p.session.active.sprite = Some(e);
+                    p.session.active.canvas = SpriteCanvas::Base(bf);
+                }
+            }
             p.session.active.layer = Some(layer_id);
             p.session.selection = Selection::Layer(layer_id);
         }
@@ -111,13 +126,14 @@ pub fn export_image(editor: &Editor) {
     };
 
     let image = editor.with_project(|p| match p.session.mode {
-        EditorMode::Animation => export_animation(p),
         EditorMode::Level => export_level(p),
-        EditorMode::Sprite => p
-            .session
-            .active
-            .frame
-            .and_then(|f| composite_frame(p, f)),
+        EditorMode::Sprite => {
+            if p.session.active.animation.is_some() {
+                export_animation(p)
+            } else {
+                composite_canvas(p)
+            }
+        }
     });
 
     let Some(Some((w, h, buf))) = image else {

@@ -1,23 +1,9 @@
 //! Software compositing helpers shared by the main viewport and the
 //! preview.
 
-use rustle_core::{FrameId, GroupId, Project};
+use rustle_core::{FrameId, GroupId, LayerId, Project, SpriteCanvas};
 
-/// Gather layer ids contributing to a frame, bottom-first, following
-/// visible groups.
-fn frame_layer_ids(p: &Project, frame: FrameId) -> Vec<rustle_core::LayerId> {
-    let mut out = Vec::new();
-    let Some(f) = p.frames.get(frame) else {
-        return out;
-    };
-    out.extend(f.layers.iter().copied());
-    for &g in &f.groups {
-        collect_group(p, g, &mut out);
-    }
-    out
-}
-
-fn collect_group(p: &Project, g: GroupId, out: &mut Vec<rustle_core::LayerId>) {
+fn collect_group(p: &Project, g: GroupId, out: &mut Vec<LayerId>) {
     let Some(group) = p.groups.get(g) else { return };
     if !group.visible {
         return;
@@ -28,13 +14,41 @@ fn collect_group(p: &Project, g: GroupId, out: &mut Vec<rustle_core::LayerId>) {
     }
 }
 
-/// Composite the visible layers of `frame` into one straight-alpha RGBA8
-/// buffer. `None` if there is nothing to draw.
+/// Composite an explicit list of layers plus groups, bottom-first.
+pub fn composite_layers(
+    p: &Project,
+    layers: &[LayerId],
+    groups: &[GroupId],
+) -> Option<(u32, u32, Vec<u8>)> {
+    let mut ids: Vec<LayerId> = layers.to_vec();
+    for &g in groups {
+        collect_group(p, g, &mut ids);
+    }
+    composite_ids(p, &ids)
+}
+
+/// Composite the visible layers of `frame`. `None` if there is nothing.
 pub fn composite_frame(p: &Project, frame: FrameId) -> Option<(u32, u32, Vec<u8>)> {
-    let ids = frame_layer_ids(p, frame);
+    let f = p.frames.get(frame)?;
+    composite_layers(p, &f.layers, &f.groups)
+}
+
+/// Composite whatever the sprite workspace currently has open.
+pub fn composite_canvas(p: &Project) -> Option<(u32, u32, Vec<u8>)> {
+    match p.session.active.canvas {
+        SpriteCanvas::Base(k) => {
+            let b = p.base_frame.get(k)?;
+            composite_layers(p, &b.layers, &b.groups)
+        }
+        SpriteCanvas::Frame(k) => composite_frame(p, k),
+        SpriteCanvas::None => None,
+    }
+}
+
+fn composite_ids(p: &Project, ids: &[LayerId]) -> Option<(u32, u32, Vec<u8>)> {
     let mut cw = 0u32;
     let mut ch = 0u32;
-    for &id in &ids {
+    for &id in ids {
         if let Some(l) = p.layers.get(id) {
             cw = cw.max(l.width);
             ch = ch.max(l.height);
@@ -45,7 +59,7 @@ pub fn composite_frame(p: &Project, frame: FrameId) -> Option<(u32, u32, Vec<u8>
     }
 
     let mut dst = vec![0u8; (cw as usize) * (ch as usize) * 4];
-    for &id in &ids {
+    for &id in ids {
         let Some(l) = p.layers.get(id) else { continue };
         if !l.visible || l.width == 0 || l.height == 0 {
             continue;
