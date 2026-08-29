@@ -7,16 +7,16 @@ use std::rc::Rc;
 
 use rustle_ui::prelude::*;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const AUTHOR: &str = "Dean Van Greunen";
-pub const EMAIL: &str = "deanvg9000@gmail.com";
-pub const REPO: &str = "https://github.com/DeanVanGreunen/rustle";
-pub const BUILD_DATE: &str = env!("BUILD_DATE");
+pub const VERSION: &str = env!("CARGO_PKG_VERSION"); // LOADED From cargo.toml
+pub const AUTHOR: &str = env!("AUTHOR");
+pub const EMAIL: &str = env!("SUPPORT_EMAIL");
+pub const REPO: &str = env!("GIT_REPO");
+pub const BUILD_DATE: &str = env!("BUILD_DATE"); // DYNAMIC (Generated During Build/Compilation Time)
 pub const BUILD_RELEASE_TYPE: &str = match option_env!("BUILD_RELEASE_TYPE") {
     Some(v) => v,
     None => "Development",
 };
-pub const BUILD_ID: &str = env!("BUILD_ID");
+pub const BUILD_ID: &str = env!("BUILD_ID"); // DYNAMIC (Generated from current git commit)
 
 const LICENSE: &str = "
 The \"Software\" refers to this app \"Rustle\"
@@ -217,10 +217,10 @@ impl Behavior for AboutDialog {
             Vec2 { x: lx, y },
             meta_s,
         );
-        y += 18.0;
+        y += 12.0;
         ctx.renderer
             .fill_rect(Rect::new(lx, y, text_w, 1.0), RULE_C);
-        y += 16.0;
+        y += 12.0;
         for line in &lines {
             if !line.is_empty() {
                 ctx.renderer.text_styled(line, Vec2 { x: lx, y }, body_s);
