@@ -8,7 +8,7 @@ use rustle_core::EditorMode;
 use rustle_ui::prelude::*;
 use rustle_ui::widgets::ViewportContent;
 
-use super::render::{composite_canvas, composite_frame};
+use super::render::{composite_canvas, composite_frame_with_base};
 use super::theme::*;
 use super::Editor;
 
@@ -48,7 +48,7 @@ impl PreviewViewport {
                         }
                         t -= d;
                     }
-                    return composite_frame(p, chosen);
+                    return composite_frame_with_base(p, chosen, p.session.active.sprite);
                 }
             }
             composite_canvas(p)

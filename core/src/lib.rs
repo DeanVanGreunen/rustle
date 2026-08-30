@@ -5,10 +5,9 @@
 //! between entities are stored as those ids.
 
 use std::collections::LinkedList;
-use std::io::{self, BufReader, BufWriter};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use slotmap::{DenseSlotMap, new_key_type};
 pub use uuid::Uuid;
 
@@ -18,6 +17,43 @@ pub use uuid::Uuid;
 /// external tools reference entities by this `Uuid`.
 fn new_id() -> Uuid {
     Uuid::new_v4()
+}
+
+/// Signed offset the old content shifts by when a dimension changes from
+/// `old` to `new`, given an anchor (0 = start, 1 = centre, 2 = end).
+fn anchor_offset(anchor: u8, old: u32, new: u32) -> i64 {
+    let delta = new as i64 - old as i64;
+    match anchor {
+        1 => delta / 2,
+        2 => delta,
+        _ => 0,
+    }
+}
+
+/// Blit an RGBA buffer into a new `nw`×`nh` buffer, translated by
+/// `(dx, dy)` and cropped to the new bounds. Missing / mismatched source
+/// data yields a fully transparent result.
+fn shift_resample(src: &[u8], ow: u32, oh: u32, nw: u32, nh: u32, dx: i64, dy: i64) -> Vec<u8> {
+    let mut out = vec![0u8; (nw as usize) * (nh as usize) * 4];
+    if src.len() != (ow as usize) * (oh as usize) * 4 {
+        return out;
+    }
+    for y in 0..oh as i64 {
+        let ny = y + dy;
+        if ny < 0 || ny >= nh as i64 {
+            continue;
+        }
+        for x in 0..ow as i64 {
+            let nx = x + dx;
+            if nx < 0 || nx >= nw as i64 {
+                continue;
+            }
+            let si = ((y * ow as i64 + x) * 4) as usize;
+            let di = ((ny * nw as i64 + nx) * 4) as usize;
+            out[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+    }
+    out
 }
 
 mod recent;
@@ -53,16 +89,56 @@ impl Point {
     }
 }
 
-/// A raster layer: tightly-packed RGBA8 pixels, row-major.
+/// How a layer or group composites onto what's below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum BlendMode {
+    #[default]
+    Normal = 0,
+    Multiply = 1,
+    Screen = 2,
+    Overlay = 3,
+    Add = 4,
+    Subtract = 5,
+}
+
+impl BlendMode {
+    pub const ALL: [BlendMode; 6] = [
+        BlendMode::Normal,
+        BlendMode::Multiply,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Add,
+        BlendMode::Subtract,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Normal",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::Screen => "Screen",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::Add => "Add",
+            BlendMode::Subtract => "Subtract",
+        }
+    }
+}
+
+/// A raster layer: tightly-packed RGBA8 pixels, row-major. The pixel
+/// buffer is NOT part of serde output — the project file stores it as a
+/// PNG in a separate data table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Layer {
     #[serde(default)]
     pub id: Uuid,
     pub width: u32,
     pub height: u32,
-    /// `width * height * 4` bytes (R, G, B, A).
+    /// `width * height * 4` bytes (R, G, B, A). Serialised separately.
+    #[serde(skip)]
     pub pixels: Vec<u8>,
     pub visible: bool,
+    #[serde(default)]
+    pub blend_mode: BlendMode,
 }
 
 impl Layer {
@@ -74,6 +150,7 @@ impl Layer {
             height,
             pixels: vec![0; width as usize * height as usize * 4],
             visible: true,
+            blend_mode: BlendMode::Normal,
         }
     }
 }
@@ -83,9 +160,17 @@ impl Layer {
 pub struct Group {
     #[serde(default)]
     pub id: Uuid,
+    #[serde(default)]
+    pub name: String,
     pub layers: Vec<LayerId>,
     pub groups: Vec<GroupId>,
     pub visible: bool,
+    #[serde(default)]
+    pub blend_mode: BlendMode,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
 }
 
 /// A drawable tile definition.
@@ -117,6 +202,10 @@ pub struct Background {
     pub base_frame: Option<BaseFrameId>,
     #[serde(default)]
     pub animations: Vec<AnimationId>,
+    #[serde(default)]
+    pub parallax: bool,
+    #[serde(default)]
+    pub z_index: i32,
 }
 
 /// An accessory image definition. Like a [`Tile`] it owns a base image
@@ -140,6 +229,8 @@ pub struct Accessory {
 pub struct Animation {
     #[serde(default)]
     pub id: Uuid,
+    #[serde(default)]
+    pub name: String,
     pub frames: LinkedList<FrameId>,
 }
 
@@ -278,6 +369,9 @@ impl Project {
         if group.id.is_nil() {
             group.id = new_id();
         }
+        if group.name.trim().is_empty() {
+            group.name = format!("Group {}", self.groups.len() + 1);
+        }
         self.groups.insert(group)
     }
 
@@ -389,6 +483,49 @@ impl Project {
             height: 16,
             ..Default::default()
         })
+    }
+
+    /// Create a new sprite of `kind` with the given name and pixel size,
+    /// seeded with a base image holding one correctly-sized layer.
+    pub fn create_sprite(
+        &mut self,
+        kind: SpriteKind,
+        name: impl Into<String>,
+        width: u32,
+        height: u32,
+    ) -> SpriteEntity {
+        let (w, h) = (width.max(1), height.max(1));
+        let name = name.into();
+        let layer = self.add_layer(Layer::blank(w, h));
+        let base = self.add_base_frame(BaseFrame {
+            width: w,
+            height: h,
+            layers: vec![layer],
+            ..Default::default()
+        });
+        match kind {
+            SpriteKind::Background => SpriteEntity::Background(self.add_background(Background {
+                name,
+                width: w,
+                height: h,
+                base_frame: Some(base),
+                ..Default::default()
+            })),
+            SpriteKind::Tile => SpriteEntity::Tile(self.add_tile(Tile {
+                name,
+                width: w,
+                height: h,
+                base_frame: Some(base),
+                ..Default::default()
+            })),
+            SpriteKind::Accessory => SpriteEntity::Accessory(self.add_accessory(Accessory {
+                name,
+                width: w,
+                height: h,
+                base_frame: Some(base),
+                ..Default::default()
+            })),
+        }
     }
 
     // --- sprite / animation workspace helpers ------------------------
@@ -598,6 +735,151 @@ impl Project {
         Some(g)
     }
 
+    /// Recursively gather every layer and group reachable from a node's
+    /// `(layers, groups)` lists.
+    fn collect_node(
+        &self,
+        layers: &[LayerId],
+        groups: &[GroupId],
+        out_layers: &mut Vec<LayerId>,
+        out_groups: &mut Vec<GroupId>,
+    ) {
+        out_layers.extend_from_slice(layers);
+        for &g in groups {
+            out_groups.push(g);
+            if let Some(grp) = self.groups.get(g) {
+                let (l, cg) = (grp.layers.clone(), grp.groups.clone());
+                self.collect_node(&l, &cg, out_layers, out_groups);
+            }
+        }
+    }
+
+    /// Resize the canvas of a sprite entity to `nw`×`nh`, applied to the
+    /// base image and every frame of every animation it owns (including
+    /// nested groups). `anchor` is `(h, v)` where each is 0 = start,
+    /// 1 = centre, 2 = end — it decides which way content shifts as the
+    /// canvas grows or shrinks, keeping the chosen edge/corner pinned.
+    pub fn resize_sprite(&mut self, e: SpriteEntity, nw: u32, nh: u32, anchor: (u8, u8)) {
+        let (nw, nh) = (nw.max(1), nh.max(1));
+        let mut layers: Vec<LayerId> = Vec::new();
+        let mut groups: Vec<GroupId> = Vec::new();
+        let mut bases: Vec<BaseFrameId> = Vec::new();
+
+        if let Some(bf) = self.entity_base_frame(e) {
+            if let Some(b) = self.base_frame.get(bf) {
+                bases.push(bf);
+                let (l, g) = (b.layers.clone(), b.groups.clone());
+                self.collect_node(&l, &g, &mut layers, &mut groups);
+            }
+        }
+        for a in self.entity_animations(e) {
+            let frames: Vec<FrameId> = self
+                .animations
+                .get(a)
+                .map(|x| x.frames.iter().copied().collect())
+                .unwrap_or_default();
+            for f in frames {
+                if let Some(fr) = self.frames.get(f) {
+                    let (l, g) = (fr.layers.clone(), fr.groups.clone());
+                    self.collect_node(&l, &g, &mut layers, &mut groups);
+                }
+            }
+        }
+        layers.sort_unstable();
+        layers.dedup();
+        groups.sort_unstable();
+        groups.dedup();
+
+        for lk in layers {
+            if let Some(l) = self.layers.get_mut(lk) {
+                let (ow, oh) = (l.width, l.height);
+                let dx = anchor_offset(anchor.0, ow, nw);
+                let dy = anchor_offset(anchor.1, oh, nh);
+                l.pixels = shift_resample(&l.pixels, ow, oh, nw, nh, dx, dy);
+                l.width = nw;
+                l.height = nh;
+            }
+        }
+        for gk in groups {
+            if let Some(g) = self.groups.get_mut(gk) {
+                if g.width != 0 {
+                    g.width = nw;
+                }
+                if g.height != 0 {
+                    g.height = nh;
+                }
+            }
+        }
+        for bk in bases {
+            if let Some(b) = self.base_frame.get_mut(bk) {
+                b.width = nw;
+                b.height = nh;
+            }
+        }
+        match e {
+            SpriteEntity::Tile(k) => {
+                if let Some(t) = self.tiles.get_mut(k) {
+                    t.width = nw;
+                    t.height = nh;
+                }
+            }
+            SpriteEntity::Background(k) => {
+                if let Some(b) = self.backgrounds.get_mut(k) {
+                    b.width = nw;
+                    b.height = nh;
+                }
+            }
+            SpriteEntity::Accessory(k) => {
+                if let Some(x) = self.accessories.get_mut(k) {
+                    x.width = nw;
+                    x.height = nh;
+                }
+            }
+        }
+    }
+
+    // --- per-frame layer memory --------------------------------------
+
+    /// Every layer reachable from a frame, including nested groups.
+    fn frame_all_layers(&self, f: FrameId) -> Vec<LayerId> {
+        let Some(fr) = self.frames.get(f) else { return Vec::new() };
+        let (mut layers, mut groups) = (Vec::new(), Vec::new());
+        let (l, g) = (fr.layers.clone(), fr.groups.clone());
+        self.collect_node(&l, &g, &mut layers, &mut groups);
+        layers
+    }
+
+    /// Record the active layer as the shown frame's remembered selection.
+    pub fn remember_frame_layer(&mut self) {
+        if let (SpriteCanvas::Frame(f), Some(l)) =
+            (self.session.active.canvas, self.session.active.layer)
+        {
+            self.session.frame_layers.insert(f, l);
+        }
+    }
+
+    /// Point `active.layer` at frame `f`'s remembered layer if it is still
+    /// valid, otherwise its first layer; refresh the stored entry.
+    pub fn restore_frame_layer(&mut self, f: FrameId) {
+        let avail = self.frame_all_layers(f);
+        let pick = self
+            .session
+            .frame_layers
+            .get(&f)
+            .copied()
+            .filter(|l| avail.contains(l))
+            .or_else(|| avail.first().copied());
+        self.session.active.layer = pick;
+        match pick {
+            Some(l) => {
+                self.session.frame_layers.insert(f, l);
+            }
+            None => {
+                self.session.frame_layers.remove(&f);
+            }
+        }
+    }
+
     /// Backfill a `Uuid` on any entity that is missing one (old files).
     pub fn ensure_ids(&mut self) {
         macro_rules! fill {
@@ -624,6 +906,7 @@ impl Project {
 
     pub fn remove_layer(&mut self, k: LayerId) {
         self.layers.remove(k);
+        self.session.frame_layers.retain(|_, v| *v != k);
         for (_, f) in self.frames.iter_mut() {
             f.layers.retain(|&x| x != k);
         }
@@ -637,6 +920,14 @@ impl Project {
     }
 
     pub fn remove_group(&mut self, k: GroupId) {
+        // Forget remembered frame selections that pointed into this group.
+        let (mut inside, mut ig) = (Vec::new(), Vec::new());
+        if let Some(g) = self.groups.get(k) {
+            let (l, gg) = (g.layers.clone(), g.groups.clone());
+            self.collect_node(&l, &gg, &mut inside, &mut ig);
+        }
+        self.session.frame_layers.retain(|_, v| !inside.contains(v));
+
         self.groups.remove(k);
         for (_, f) in self.frames.iter_mut() {
             f.groups.retain(|&x| x != k);
@@ -652,6 +943,7 @@ impl Project {
 
     pub fn remove_frame(&mut self, k: FrameId) {
         self.frames.remove(k);
+        self.session.frame_layers.remove(&k);
         for (_, a) in self.animations.iter_mut() {
             a.frames = a.frames.iter().copied().filter(|&x| x != k).collect();
         }
@@ -714,6 +1006,12 @@ impl Project {
     /// Drop selection / active references that no longer resolve (e.g.
     /// after hand-editing the file). Called by [`Project::load`].
     pub fn validate_session(&mut self) {
+        let frames = &self.frames;
+        let layers = &self.layers;
+        self.session
+            .frame_layers
+            .retain(|f, l| frames.contains_key(*f) && layers.contains_key(*l));
+
         let s = &mut self.session;
         if s.active.frame.is_some_and(|k| !self.frames.contains_key(k)) {
             s.active.frame = self.frames.keys().next();
@@ -779,21 +1077,59 @@ impl Project {
         }
     }
 
-    /// Serialize the project to `self.file_path` as pretty JSON.
-    pub fn save(&self) -> io::Result<()> {
-        let file = std::fs::File::create(&self.file_path)?;
-        serde_json::to_writer_pretty(BufWriter::new(file), self).map_err(io::Error::other)
+    /// Run after loading from a file: backfill ids, drop dangling refs.
+    pub fn finish_load(&mut self) {
+        self.ensure_ids();
+        self.validate_session();
     }
 
-    /// Load a project from `path`; `file_path` is set to `path`.
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
-        let file = std::fs::File::open(path)?;
-        let mut project: Project =
-            serde_json::from_reader(BufReader::new(file)).map_err(io::Error::other)?;
-        project.file_path = path.to_string_lossy().into_owned();
-        project.ensure_ids();
-        project.validate_session();
-        Ok(project)
+    // --- deep copy -------------------------------------------------
+
+    fn dup_layer(&mut self, src: LayerId) -> Option<LayerId> {
+        let mut l = self.layers.get(src)?.clone();
+        l.id = new_id();
+        Some(self.layers.insert(l))
+    }
+
+    fn dup_group(&mut self, src: GroupId) -> Option<GroupId> {
+        let (layers, groups, mut g) = {
+            let g = self.groups.get(src)?;
+            (g.layers.clone(), g.groups.clone(), g.clone())
+        };
+        g.id = new_id();
+        g.layers = layers.iter().filter_map(|&l| self.dup_layer(l)).collect();
+        g.groups = groups.iter().filter_map(|&c| self.dup_group(c)).collect();
+        Some(self.groups.insert(g))
+    }
+
+    /// Deep-copy a frame (new slot ids + uuids for it and every layer /
+    /// group it contains), keeping pixel data, blend modes, sizes.
+    pub fn duplicate_frame(&mut self, src: FrameId) -> Option<FrameId> {
+        let (layers, groups, delay) = {
+            let f = self.frames.get(src)?;
+            (f.layers.clone(), f.groups.clone(), f.delay_ms)
+        };
+        let new_layers: Vec<LayerId> = layers.iter().filter_map(|&l| self.dup_layer(l)).collect();
+        let new_groups: Vec<GroupId> = groups.iter().filter_map(|&g| self.dup_group(g)).collect();
+        Some(self.add_frame(Frame {
+            layers: new_layers,
+            groups: new_groups,
+            delay_ms: delay,
+            ..Default::default()
+        }))
+    }
+
+    /// Deep-copy an animation and all of its frames.
+    pub fn duplicate_animation(&mut self, src: AnimationId) -> Option<AnimationId> {
+        let frames: Vec<FrameId> = self.animations.get(src)?.frames.iter().copied().collect();
+        let anim = self.add_animation(Animation::default());
+        for f in frames {
+            if let Some(nf) = self.duplicate_frame(f) {
+                if let Some(a) = self.animations.get_mut(anim) {
+                    a.frames.push_back(nf);
+                }
+            }
+        }
+        Some(anim)
     }
 }

@@ -49,7 +49,6 @@ enum Act {
     AddGroupGroup(GroupId),
     SelectLayer(LayerId),
     SelectGroup(GroupId),
-    SelectAnimation(AnimationId),
     DeleteLayer(LayerId),
     DeleteGroup(GroupId),
     DeleteFrame(FrameId),
@@ -57,6 +56,7 @@ enum Act {
     // level workspace
     SelectLevelItem(Selection),
     AddLevel,
+    NewSprite,
     NewTile,
     NewBackground,
     NewAccessory,
@@ -67,6 +67,7 @@ enum Btn {
     Open,
     Delete,
     New,
+    AddFrame,
     AddLayer,
     AddGroup,
 }
@@ -77,6 +78,7 @@ impl Btn {
             Btn::Open => "Open",
             Btn::Delete => "Delete",
             Btn::New => "New",
+            Btn::AddFrame => "+ Frame",
             Btn::AddLayer => "+ Layer",
             Btn::AddGroup => "+ Group",
         }
@@ -144,6 +146,7 @@ pub struct OutlineTreeView {
     expanded: RefCell<HashSet<Expand>>,
     scroll: Cell<f32>,
     hits: RefCell<Vec<HitRow>>,
+    last_sprite: Cell<Option<SpriteEntity>>,
 }
 
 impl OutlineTreeView {
@@ -154,6 +157,7 @@ impl OutlineTreeView {
             expanded: RefCell::new(HashSet::new()),
             scroll: Cell::new(0.0),
             hits: RefCell::new(Vec::new()),
+            last_sprite: Cell::new(None),
         }
     }
 
@@ -182,22 +186,30 @@ impl OutlineTreeView {
     fn sprite_rows(&self, p: &Project, rows: &mut Vec<Row>) {
         let sel = p.session.selection;
         let active_layer = p.session.active.layer;
+        let active_anim = p.session.active.animation;
 
-        let cats: [(&str, Vec<SpriteEntity>, Act); 3] = [
-            (
-                "Backgrounds",
-                p.backgrounds.keys().map(SpriteEntity::Background).collect(),
-                Act::NewBackground,
-            ),
-            ("Tiles", p.tiles.keys().map(SpriteEntity::Tile).collect(), Act::NewTile),
-            (
-                "Accessories",
-                p.accessories.keys().map(SpriteEntity::Accessory).collect(),
-                Act::NewAccessory,
-            ),
+        // When a different sprite becomes active, collapse everything else
+        // and open just that one's subtree.
+        let cur = p.session.active.sprite;
+        if self.last_sprite.get() != cur {
+            self.last_sprite.set(cur);
+            let mut ex = self.expanded.borrow_mut();
+            ex.clear();
+            if let Some(e) = cur {
+                ex.insert(Expand::Entity(e));
+                ex.insert(Expand::Base(e));
+            }
+        }
+
+        rows.push(Row::item(0, "+ New Sprite", Act::NewSprite, false).mark_add());
+
+        let cats: [(&str, Vec<SpriteEntity>); 3] = [
+            ("Backgrounds", p.backgrounds.keys().map(SpriteEntity::Background).collect()),
+            ("Tiles", p.tiles.keys().map(SpriteEntity::Tile).collect()),
+            ("Accessories", p.accessories.keys().map(SpriteEntity::Accessory).collect()),
         ];
 
-        for (title, entities, new_act) in cats {
+        for (title, entities) in cats {
             header(rows, title);
             for e in entities {
                 let name = p.entity_name(e);
@@ -246,12 +258,19 @@ impl OutlineTreeView {
                 if anims_open {
                     for (n, a) in p.entity_animations(e).into_iter().enumerate() {
                         let a_open = self.open(Expand::Anim(a));
-                        let a_sel = sel == Selection::Animation(a);
+                        let a_sel = sel == Selection::Animation(a) || active_anim == Some(a);
+                        let name = p.animations.get(a).map(|x| x.name.clone()).unwrap_or_default();
                         let count = p.animations.get(a).map(|x| x.frames.len()).unwrap_or(0);
+                        let label = if name.trim().is_empty() {
+                            format!("Animation {} ({count})", n + 1)
+                        } else {
+                            format!("{name} ({count})")
+                        };
                         rows.push(
-                            Row::item(3, format!("Animation {} ({count})", n + 1), Act::SelectAnimation(a), a_sel)
+                            Row::item(3, label, Act::OpenAnimation(e, a), a_sel)
                                 .twisty(Expand::Anim(a), a_open)
                                 .btn(Btn::Open, Act::OpenAnimation(e, a))
+                                .btn(Btn::AddFrame, Act::NewFrame(a))
                                 .btn(Btn::Delete, Act::DeleteAnimation(a)),
                         );
                         if !a_open {
@@ -268,6 +287,7 @@ impl OutlineTreeView {
                             rows.push(
                                 Row::item(4, format!("Frame {}", fi + 1), Act::ShowFrame(f), f_sel)
                                     .twisty(Expand::Frame(f), f_open)
+                                    .btn(Btn::Open, Act::ShowFrame(f))
                                     .btn(Btn::AddLayer, Act::AddLayerFrame(f))
                                     .btn(Btn::AddGroup, Act::AddGroupFrame(f))
                                     .btn(Btn::Delete, Act::DeleteFrame(f)),
@@ -283,13 +303,10 @@ impl OutlineTreeView {
                                 }
                             }
                         }
-                        rows.push(
-                            Row::item(4, "+ Add Frame", Act::NewFrame(a), false).mark_add(),
-                        );
+                        rows.push(Row::item(4, "+ Frame", Act::NewFrame(a), false).mark_add());
                     }
                 }
             }
-            rows.push(Row::item(0, format!("+ New {}", singular(title)), new_act, false).mark_add());
         }
     }
 
@@ -307,11 +324,15 @@ impl OutlineTreeView {
         rows.push(
             Row::item(
                 depth,
-                format!("Group ({})", group.layers.len()),
+                {
+                    let base = if group.name.trim().is_empty() { "Group" } else { group.name.trim() };
+                    format!("{base} ({} / {})", group.layers.len(), group.groups.len())
+                },
                 Act::SelectGroup(g),
                 sel == Selection::Group(g),
             )
             .twisty(Expand::Group(g), open)
+            .btn(Btn::Open, Act::SelectGroup(g))
             .btn(Btn::AddLayer, Act::AddLayerGroup(g))
             .btn(Btn::AddGroup, Act::AddGroupGroup(g))
             .btn(Btn::Delete, Act::DeleteGroup(g)),
@@ -338,9 +359,16 @@ impl OutlineTreeView {
     ) {
         let vis = p.layers.get(l).map(|x| x.visible).unwrap_or(true);
         let label = format!("{}Layer {}", if vis { "" } else { "(hidden) " }, i + 1);
-        let mut row = Row::item(depth, label, Act::SelectLayer(l), sel == Selection::Layer(l))
-            .btn(Btn::Delete, Act::DeleteLayer(l));
-        if active_layer == Some(l) {
+        let active = active_layer == Some(l);
+        let mut row = Row::item(
+            depth,
+            label,
+            Act::SelectLayer(l),
+            active || sel == Selection::Layer(l),
+        )
+        .btn(Btn::Open, Act::SelectLayer(l))
+        .btn(Btn::Delete, Act::DeleteLayer(l));
+        if active {
             row = row.bold();
         }
         rows.push(row);
@@ -455,24 +483,13 @@ impl OutlineTreeView {
                     if let Some(f) = p.animations.get(a).and_then(|x| x.frames.front().copied()) {
                         p.session.active.canvas = SpriteCanvas::Frame(f);
                         p.session.active.frame = Some(f);
+                        p.restore_frame_layer(f);
                     }
                 });
             }
-            Act::NewAnimation(e) => {
-                ed.edit(|p| {
-                    let a = p.add_animation_to_entity(e);
-                    p.session.active.animation = Some(a);
-                    p.session.selection = Selection::Animation(a);
-                });
-            }
-            Act::NewFrame(a) => {
-                ed.edit(|p| {
-                    if let Some(f) = p.add_frame_to_animation(a) {
-                        p.session.active.canvas = SpriteCanvas::Frame(f);
-                        p.session.active.frame = Some(f);
-                    }
-                });
-            }
+            Act::NewSprite => ed.new_sprite_open.set(true),
+            Act::NewAnimation(e) => ed.add_anim_open.set(Some(e)),
+            Act::NewFrame(a) => ed.add_frame_open.set(Some(a)),
             Act::AddLayerBase(e) => {
                 ed.edit(|p| {
                     let l = p.add_layer_to_base(e);
@@ -481,51 +498,37 @@ impl OutlineTreeView {
                 });
             }
             Act::AddGroupBase(e) => {
-                ed.edit(|p| {
-                    let g = p.add_group_to_base(e);
-                    p.session.selection = Selection::Group(g);
-                });
+                ed.add_group_open.set(Some(super::GroupTarget::Base(e)));
             }
             Act::AddLayerFrame(f) => {
                 ed.edit(|p| {
                     if let Some(l) = p.add_layer_to_frame(f) {
                         p.session.active.layer = Some(l);
                         p.session.selection = Selection::Layer(l);
+                        p.remember_frame_layer();
                     }
                 });
             }
             Act::AddGroupFrame(f) => {
-                ed.edit(|p| {
-                    if let Some(g) = p.add_group_to_frame(f) {
-                        p.session.selection = Selection::Group(g);
-                    }
-                });
+                ed.add_group_open.set(Some(super::GroupTarget::Frame(f)));
             }
             Act::AddLayerGroup(g) => {
                 ed.edit(|p| {
                     if let Some(l) = p.add_layer_to_group(g) {
                         p.session.active.layer = Some(l);
                         p.session.selection = Selection::Layer(l);
+                        p.remember_frame_layer();
                     }
                 });
             }
             Act::AddGroupGroup(g) => {
-                ed.edit(|p| {
-                    if let Some(c) = p.add_group_to_group(g) {
-                        p.session.selection = Selection::Group(c);
-                    }
-                });
+                ed.add_group_open.set(Some(super::GroupTarget::Group(g)));
             }
             Act::SelectLayer(l) => {
                 ed.edit(|p| {
                     p.session.active.layer = Some(l);
                     p.session.selection = Selection::Layer(l);
-                });
-            }
-            Act::SelectAnimation(a) => {
-                ed.edit(|p| {
-                    p.session.active.animation = Some(a);
-                    p.session.selection = Selection::Animation(a);
+                    p.remember_frame_layer();
                 });
             }
             Act::DeleteLayer(l) => {
@@ -599,14 +602,6 @@ fn disp(name: String, fallback: &str) -> String {
     if name.trim().is_empty() { fallback.to_string() } else { name }
 }
 
-fn singular(s: &str) -> &str {
-    match s {
-        "Accessories" => "Accessory",
-        "Tiles" => "Tile",
-        "Backgrounds" => "Background",
-        other => other,
-    }
-}
 
 impl Behavior for OutlineTreeView {
     fn render(&mut self, ctx: &mut RenderContext) {
@@ -658,19 +653,36 @@ impl Behavior for OutlineTreeView {
                     text(r, &row.label, tx + 0.4, y + 5.0, size, color);
                 }
 
-                // Buttons after the label.
-                let lw = r.measure(&row.label, &TextStyle { size, color, font: FontId::DEFAULT });
-                let mut bx = tx + lw + 10.0;
-                for (b, act) in &row.buttons {
-                    let bl = b.label();
-                    let bw = r.measure(bl, &TextStyle { size: 10.0, color: DIM, font: FontId::DEFAULT }) + 14.0;
-                    if bx + bw > w - 6.0 {
-                        break;
-                    }
-                    let rect = Rect::new(bx, y + (ROW_H - BTN_H) * 0.5, bw, BTN_H);
+                // Buttons after the label. A Delete button is always
+                // pinned to the right edge so it can't be pushed off by a
+                // crowded, deeply-indented row.
+                let bstyle = TextStyle { size: 10.0, color: DIM, font: FontId::DEFAULT };
+                let draw_btn = |r: &mut Renderer, rect: Rect, b: Btn| {
                     r.fill_rounded_rect(rect, 7.0, PANEL_BG_ALT);
                     outline(r, rect);
-                    text(r, bl, rect.x + 7.0, rect.y + 2.0, 10.0, if *b == Btn::Delete { Color::hex(0x9a4a4a) } else { DIM });
+                    let c = if b == Btn::Delete { Color::hex(0x9a4a4a) } else { DIM };
+                    text(r, b.label(), rect.x + 7.0, rect.y + 2.0, 10.0, c);
+                };
+                let by = y + (ROW_H - BTN_H) * 0.5;
+
+                let del = row.buttons.iter().find(|(b, _)| *b == Btn::Delete).copied();
+                let mut right = w - 6.0;
+                if let Some((_, act)) = del {
+                    let dw = r.measure("Delete", &bstyle) + 14.0;
+                    let rx = right - dw;
+                    draw_btn(r, Rect::new(rx, by, dw, BTN_H), Btn::Delete);
+                    hit.buttons.push((rx, dw, act));
+                    right = rx - BTN_GAP;
+                }
+
+                let lw = r.measure(&row.label, &TextStyle { size, color, font: FontId::DEFAULT });
+                let mut bx = tx + lw + 10.0;
+                for (b, act) in row.buttons.iter().filter(|(b, _)| *b != Btn::Delete) {
+                    let bw = r.measure(b.label(), &bstyle) + 14.0;
+                    if bx + bw > right {
+                        break;
+                    }
+                    draw_btn(r, Rect::new(bx, by, bw, BTN_H), *b);
                     hit.buttons.push((bx, bw, *act));
                     bx += bw + BTN_GAP;
                 }

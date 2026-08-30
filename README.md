@@ -53,7 +53,13 @@ workspace and is where you add and remove things.
 
 ### Project and files
 
-- New, open and save projects as `.rustle` files (pretty printed JSON)
+- New, open and save projects as `.rustle` files. The format is binary: a
+  small header with the app version and creation and modification dates, the
+  document data packed with bincode, every layer stored as a PNG so the pixel
+  data is compressed losslessly, and a SHA-1 checksum at the end so a corrupt
+  file is caught on load
+- A backup copy is written to `%APPDATA%/Rustle/Backups` every five minutes
+  while you work
 - Save As to a new location, and a Project Properties dialog to rename the project
   and see its file path, format version and entity counts
 - Import a PNG, JPG or BMP. In the Sprite / Animation workspace it drops onto the
@@ -85,8 +91,8 @@ slotmap keys get shuffled.
   leave gaps
 - Eyedropper, samples the composited pixel under the cursor into the foreground
   colour
-- Zoom and a hand style pan (hold space and drag), plus mouse wheel zoom that
-  keeps the point under the cursor fixed
+- Zoom, plus a middle mouse button drag to pan and a mouse wheel zoom that keeps
+  the point under the cursor fixed
 - Move, for dragging placed items around the level with optional grid snapping
 - Line and Rectangle, with a live rubber band preview, stroke width and a filled
   option for the rectangle
@@ -104,6 +110,14 @@ The colour picker has an HSV square, a hue bar, an alpha bar, and hex fields for
 the foreground and background colours that you can click and type into. There's a
 swatch row you can add colours to. The eyedropper feeds straight into it.
 
+### Layers, groups and blending
+
+Every layer and group has a blend mode (Normal, Multiply, Screen, Overlay, Add,
+Subtract), set from its entry in the properties panel. Groups composite their own
+contents first and then blend the result onto whatever is below. When you are
+looking at an animation frame, the entity's base image is drawn underneath the
+frame automatically, so the frame only needs to hold the parts that change.
+
 ### Animation
 
 When you open an animation from the outline, a timeline strip appears at the
@@ -112,6 +126,16 @@ as cells with their delay, lets you jump to a frame by clicking, drag cells to
 reorder them, add a frame with the plus button, and remove the current frame with
 Delete. Play and loop buttons run the animation in the main viewport and the
 preview.
+
+The tool options row has a second column on the right with a Snap and an Onion
+control. Snap opens a small panel for a grid cell width and height, and turns on
+a grid overlay plus grid snapping for the Move tool. Onion opens a panel where
+you enable onion skinning and set, for the previous and next frame, whether the
+ghost draws above or below the current frame, its colour, and the ghost opacity.
+Previous frames default to a blue tint and next frames to an orange one. There is
+a little stick figure in the panel that jumps between the two colours so you can
+see the current settings. A tick box next to the Onion button switches onion
+skinning off without opening the panel.
 
 ## What's left to do
 
@@ -141,7 +165,7 @@ Nothing here is blocking, it's just the next round of polish and features.
 | About | Ctrl+Alt+A |
 | Delete selection or clear marquee | Delete |
 | Copy / paste pixels | Ctrl+C, Ctrl+V |
-| Pan the canvas | hold Space and drag |
+| Pan the canvas | drag with the middle mouse button |
 | Tools | V select, M marquee, B pencil, I eyedropper, Z zoom, H move, L line, R rectangle, F fill, T text |
 
 ## Licence

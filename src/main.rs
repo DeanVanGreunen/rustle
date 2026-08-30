@@ -127,9 +127,26 @@ async fn main() {
     let mut renderer = Renderer::new();
     mq_backend::install(&mut ui, &mut renderer, &fonts);
     mq_backend::set_text_scale(1.10);
+    mq_backend::set_pixelated(true); // crisp nearest-neighbour pixel scaling
+
+    // Intercept the window close so we can offer to save first.
+    prevent_quit();
+
+    let mut next_backup = get_time() + 300.0;
 
     loop {
         mq_backend::pump_input(&mut ui);
+
+        // Autosave a backup copy to %APPDATA%/Rustle/Backups every 5 min.
+        if get_time() >= next_backup {
+            next_backup = get_time() + 300.0;
+            if let Some(p) = app.borrow().as_ref() {
+                match rustle_project::write_backup(p) {
+                    Ok(path) => println!("backup written: {}", path.display()),
+                    Err(e) => eprintln!("backup failed: {e}"),
+                }
+            }
+        }
 
         let launching = !ui.is_hidden(startup.overlay);
 
@@ -148,7 +165,7 @@ async fn main() {
                 {
                     let path = path.to_string_lossy().into_owned();
                     let project = Project::new(&name, &path);
-                    if let Err(e) = project.save() {
+                    if let Err(e) = rustle_project::save(&project) {
                         eprintln!("could not write {path}: {e}");
                     } else {
                         open_project(&mut ui, &startup, &nav_state, &editor, &mut recent, &app, project);
@@ -157,7 +174,7 @@ async fn main() {
             }
             Signal::OpenRecent(i) => {
                 if let Some(entry) = recent.entries.get(i).cloned() {
-                    match Project::load(&entry.path) {
+                    match rustle_project::load(&entry.path) {
                         Ok(project) => open_project(
                             &mut ui, &startup, &nav_state, &editor, &mut recent, &app, project,
                         ),
@@ -178,7 +195,6 @@ async fn main() {
             input.shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
             input.ctrl = ctrl;
             input.alt = alt;
-            input.space = is_key_down(KeyCode::Space);
             input.mouse_down = is_mouse_button_down(macroquad::input::MouseButton::Left);
         }
 
@@ -198,6 +214,11 @@ async fn main() {
             about.set(false);
             editor.new_level_open.set(false);
             editor.project_props_open.set(false);
+            editor.new_sprite_open.set(false);
+            editor.add_anim_open.set(None);
+            editor.add_frame_open.set(None);
+            editor.add_group_open.set(None);
+            editor.resize_canvas_open.set(false);
             editor.main_marquee.set(None);
         }
 
@@ -225,7 +246,7 @@ async fn main() {
         match editor.menu_action.replace(editor::MenuAction::None) {
             editor::MenuAction::Save => {
                 if let Some(p) = app.borrow().as_ref() {
-                    match p.save() {
+                    match rustle_project::save(p) {
                         Ok(()) => editor.dirty.set(false),
                         Err(e) => eprintln!("save failed: {e}"),
                     }
@@ -295,6 +316,31 @@ async fn main() {
         if let Some(name) = editor.with_project(|p| p.project_name.clone()) {
             nav_state.set_project_name(name);
             nav_state.set_saved(!editor.dirty.get());
+        }
+
+        // --- window close: save-before-quit prompt ------------------
+        if is_quit_requested() {
+            if app.borrow().is_some() && editor.dirty.get() {
+                editor.quit_prompt.set(true);
+            } else {
+                break;
+            }
+        }
+        if editor.quit_prompt.get() && is_key_pressed(KeyCode::Escape) {
+            editor.quit_choice.set(editor::QuitChoice::Cancel);
+        }
+        match editor.quit_choice.replace(editor::QuitChoice::None) {
+            editor::QuitChoice::Save => {
+                if let Some(p) = app.borrow().as_ref() {
+                    if let Err(e) = rustle_project::save(p) {
+                        eprintln!("save failed: {e}");
+                    }
+                }
+                break;
+            }
+            editor::QuitChoice::Discard => break,
+            editor::QuitChoice::Cancel => editor.quit_prompt.set(false),
+            editor::QuitChoice::None => {}
         }
 
         ui.tick(get_frame_time());

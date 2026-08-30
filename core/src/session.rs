@@ -3,10 +3,34 @@
 //! selection, viewport zoom/pan, and the colour swatches.
 
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
     AccessoryId, AnimationId, BackgroundId, BaseFrameId, FrameId, GroupId, LayerId, LevelId, TileId,
 };
+
+/// The three kinds of drawable definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum SpriteKind {
+    #[default]
+    Background = 0,
+    Tile = 1,
+    Accessory = 2,
+}
+
+impl SpriteKind {
+    pub const ALL: [SpriteKind; 3] =
+        [SpriteKind::Background, SpriteKind::Tile, SpriteKind::Accessory];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SpriteKind::Background => "Background",
+            SpriteKind::Tile => "Tile",
+            SpriteKind::Accessory => "Accessory",
+        }
+    }
+}
 
 /// A drawable definition in the Sprite / Animation workspace: a tile,
 /// background or accessory. Each owns a base image plus animations.
@@ -30,12 +54,12 @@ pub enum SpriteCanvas {
 
 /// Which editor workspace is shown. The old separate "Animation" mode is
 /// folded into "Sprite / Animation".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum EditorMode {
     #[default]
-    Level,
-    #[serde(alias = "Animation")]
-    Sprite,
+    Level = 0,
+    Sprite = 1,
 }
 
 impl EditorMode {
@@ -50,26 +74,29 @@ impl EditorMode {
 }
 
 /// The editing tools (tool palette / first column).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum Tool {
     #[default]
-    Select,
-    Marquee,
-    Pencil,
-    Eyedropper,
-    Zoom,
-    Move,
-    Line,
-    Rectangle,
-    Fill,
-    Text,
+    Select = 0,
+    Marquee = 1,
+    Pencil = 2,
+    Eyedropper = 3,
+    Zoom = 4,
+    Move = 5,
+    Line = 6,
+    Rectangle = 7,
+    Fill = 8,
+    Text = 9,
+    Eraser = 10,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 11] = [
         Tool::Select,
         Tool::Marquee,
         Tool::Pencil,
+        Tool::Eraser,
         Tool::Eyedropper,
         Tool::Zoom,
         Tool::Move,
@@ -84,6 +111,7 @@ impl Tool {
             Tool::Select => "Select",
             Tool::Marquee => "Marquee",
             Tool::Pencil => "Pencil",
+            Tool::Eraser => "Eraser",
             Tool::Eyedropper => "Eyedropper",
             Tool::Zoom => "Zoom",
             Tool::Move => "Move",
@@ -99,6 +127,7 @@ impl Tool {
             Tool::Select => "V",
             Tool::Marquee => "M",
             Tool::Pencil => "B",
+            Tool::Eraser => "E",
             Tool::Eyedropper => "I",
             Tool::Zoom => "Z",
             Tool::Move => "H",
@@ -117,12 +146,13 @@ impl Tool {
 
 // --- per-tool settings ----------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum MarqueeMode {
     #[default]
-    Replace,
-    Add,
-    Subtract,
+    Replace = 0,
+    Add = 1,
+    Subtract = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -191,12 +221,13 @@ impl Default for FillSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum GridSnap {
     #[default]
-    Off,
-    Half,
-    Full,
+    Off = 0,
+    Half = 1,
+    Full = 2,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -235,12 +266,24 @@ pub struct SelectSettings {
     pub whole_group: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EraserSettings {
+    pub size: u32,
+}
+impl Default for EraserSettings {
+    fn default() -> Self {
+        Self { size: 1 }
+    }
+}
+
 /// One settings block per tool type.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ToolSettings {
     pub select: SelectSettings,
     pub marquee: MarqueeSettings,
     pub pencil: PencilSettings,
+    #[serde(default)]
+    pub eraser: EraserSettings,
     pub eyedropper: EyedropperSettings,
     pub zoom: ZoomSettings,
     #[serde(rename = "move")]
@@ -318,14 +361,76 @@ impl Default for ColorState {
     }
 }
 
+// --- onion skin / grid -------------------------------------------
+
+/// Whether an onion-skin ghost draws over or under the current frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum OnionSide {
+    #[default]
+    Below = 0,
+    Above = 1,
+}
+
+impl OnionSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            OnionSide::Below => "Below",
+            OnionSide::Above => "Above",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OnionSettings {
+    pub enabled: bool,
+    pub prev_enabled: bool,
+    pub next_enabled: bool,
+    pub prev_side: OnionSide,
+    pub next_side: OnionSide,
+    pub prev_color: [u8; 4],
+    pub next_color: [u8; 4],
+    /// Ghost opacity, 0..1.
+    pub opacity: f32,
+}
+
+impl Default for OnionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            prev_enabled: true,
+            next_enabled: true,
+            prev_side: OnionSide::Below,
+            next_side: OnionSide::Below,
+            prev_color: [0x01, 0xA7, 0xC2, 0xFF],
+            next_color: [0xE3, 0x88, 0x00, 0xFF],
+            opacity: 0.1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GridSettings {
+    pub enabled: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for GridSettings {
+    fn default() -> Self {
+        Self { enabled: false, width: 16, height: 16 }
+    }
+}
+
 // --- the aggregate ---------------------------------------------
 
 /// Tab shown in the Selected-Properties panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum PropsTab {
     #[default]
-    SwatchesPreview,
-    Properties,
+    SwatchesPreview = 0,
+    Properties = 1,
 }
 
 /// Everything the editor UI remembers, saved inside the `.rustle` file.
@@ -340,4 +445,13 @@ pub struct Session {
     pub preview_view: ViewportState,
     pub colors: ColorState,
     pub props_tab: PropsTab,
+    #[serde(default)]
+    pub onion: OnionSettings,
+    #[serde(default)]
+    pub grid: GridSettings,
+    /// Last layer selected while each frame was shown, restored when the
+    /// frame is reopened. Entries are scrubbed when the layer (or a group
+    /// containing it) is deleted.
+    #[serde(default)]
+    pub frame_layers: std::collections::HashMap<FrameId, LayerId>,
 }

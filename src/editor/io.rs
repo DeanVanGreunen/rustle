@@ -4,7 +4,7 @@ use rustle_core::{
     BaseFrame, EditorMode, Layer, Selection, SpriteCanvas, SpriteEntity, Tile, FILE_EXT,
 };
 
-use super::render::{composite_canvas, composite_frame};
+use super::render::{composite_canvas, composite_frame_with_base};
 use super::Editor;
 
 /// Prompt for a new `.rustle` path, repoint the project, and save.
@@ -24,7 +24,7 @@ pub fn save_as(editor: &Editor) -> Option<(String, String)> {
     let path = path.to_string_lossy().into_owned();
     let saved = editor.edit(|p| {
         p.file_path = path.clone();
-        p.save()
+        rustle_project::save(p)
     });
     match saved {
         Some(Ok(())) => {
@@ -150,7 +150,7 @@ fn export_animation(p: &rustle_core::Project) -> Option<(u32, u32, Vec<u8>)> {
     let frames: Vec<_> = anim
         .frames
         .iter()
-        .filter_map(|f| composite_frame(p, *f))
+        .filter_map(|f| composite_frame_with_base(p, *f, p.session.active.sprite))
         .collect();
     if frames.is_empty() {
         return None;

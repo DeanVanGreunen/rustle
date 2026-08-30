@@ -2,12 +2,13 @@
 //! level items it also offers a grouped tile/background/accessory picker
 //! (headers shown but disabled) drawn in the overlay pass.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
-use rustle_core::{EditorMode, Project, Selection, TileId};
+use rustle_core::{BlendMode, EditorMode, GroupId, Project, Selection, SpriteCanvas, TileId};
 use rustle_ui::prelude::*;
 
-use super::form::Form;
+use super::form::{Form, FormHit};
+use super::numinput::NumState;
 use super::theme::*;
 use super::Editor;
 
@@ -18,6 +19,7 @@ pub struct PropertiesForm {
     dd_open: Cell<bool>,
     dd_btn: Cell<Rect>,
     abs: Cell<(f32, f32)>,
+    nums: RefCell<NumState>,
 }
 
 impl PropertiesForm {
@@ -28,12 +30,17 @@ impl PropertiesForm {
             dd_open: Cell::new(false),
             dd_btn: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
             abs: Cell::new((0.0, 0.0)),
+            nums: RefCell::new(NumState::default()),
         }
     }
 
     fn build(&self, width: f32) -> Form {
         let inner = (width - 28.0).max(80.0);
-        let mut f = Form::new(14.0, 12.0, inner);
+        let edit = {
+            let n = self.nums.borrow();
+            n.editing_key().map(|k| (k, n.buffer_for(k).unwrap_or("").to_string()))
+        };
+        let mut f = Form::new(14.0, 12.0, inner).editing(edit);
         let Some(sel) = self.editor.session(|s| s.selection) else {
             return f;
         };
@@ -44,7 +51,14 @@ impl PropertiesForm {
             Selection::Layer(k) => {
                 if let Some(l) = p.layers.get(k) {
                     f.heading("Layer");
-                    f.readonly("Size", format!("{} × {}", l.width, l.height));
+                    f.readonly("UUID", l.id.to_string());
+                    f.readonly("Size", format!("{} \u{00d7} {}", l.width, l.height));
+                    let mode = l.blend_mode;
+                    f.cycle("Blend", mode.label().into(), BlendMode::ALL.len(), blend_idx(mode), move |p, i| {
+                        if let Some(l) = p.layers.get_mut(k) {
+                            l.blend_mode = BlendMode::ALL[i];
+                        }
+                    });
                     let vis = l.visible;
                     f.toggle("Visible", vis, move |p, on| {
                         if let Some(l) = p.layers.get_mut(k) {
@@ -57,8 +71,22 @@ impl PropertiesForm {
             Selection::Group(k) => {
                 if let Some(g) = p.groups.get(k) {
                     f.heading("Group");
-                    f.readonly("Layers", g.layers.len().to_string());
-                    f.readonly("Sub-groups", g.groups.len().to_string());
+                    f.readonly("UUID", g.id.to_string());
+                    let (tl, tg) = group_totals(p, k);
+                    f.readonly("Layers (total)", tl.to_string());
+                    f.readonly("Groups (total)", tg.to_string());
+                    let mode = g.blend_mode;
+                    f.cycle("Blend", mode.label().into(), BlendMode::ALL.len(), blend_idx(mode), move |p, i| {
+                        if let Some(g) = p.groups.get_mut(k) {
+                            g.blend_mode = BlendMode::ALL[i];
+                        }
+                    });
+                    f.stepper("Width", g.width as i64, 0, 8192, 1, move |p, v| {
+                        if let Some(g) = p.groups.get_mut(k) { g.width = v as u32; }
+                    });
+                    f.stepper("Height", g.height as i64, 0, 8192, 1, move |p, v| {
+                        if let Some(g) = p.groups.get_mut(k) { g.height = v as u32; }
+                    });
                     let vis = g.visible;
                     f.toggle("Visible", vis, move |p, on| {
                         if let Some(g) = p.groups.get_mut(k) {
@@ -71,6 +99,7 @@ impl PropertiesForm {
             Selection::Frame(k) => {
                 if let Some(fr) = p.frames.get(k) {
                     f.heading("Frame");
+                    f.readonly("UUID", fr.id.to_string());
                     f.stepper("Delay (ms)", fr.delay_ms as i64, 1, 60000, 10, move |p, v| {
                         if let Some(fr) = p.frames.get_mut(k) {
                             fr.delay_ms = v as u64;
@@ -81,9 +110,29 @@ impl PropertiesForm {
                 }
             }
 
+            Selection::Animation(k) => {
+                if let Some(a) = p.animations.get(k) {
+                    f.heading("Animation");
+                    f.readonly("Name", if a.name.is_empty() { "\u{2014}".into() } else { a.name.clone() });
+                    f.readonly("Frames", a.frames.len().to_string());
+                    if let SpriteCanvas::Frame(fk) = p.session.active.canvas {
+                        if let Some(fr) = p.frames.get(fk) {
+                            f.heading("Current Frame");
+                            f.readonly("Frame UUID", fr.id.to_string());
+                            f.stepper("Delay (ms)", fr.delay_ms as i64, 1, 60000, 10, move |p, v| {
+                                if let Some(fr) = p.frames.get_mut(fk) {
+                                    fr.delay_ms = v as u64;
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
             Selection::Tile(k) => {
                 if let Some(t) = p.tiles.get(k) {
                     f.heading("Tile");
+                    f.readonly("UUID", t.id.to_string());
                     f.readonly("Name", if t.name.is_empty() { "—".into() } else { t.name.clone() });
                     f.stepper("Width", t.width as i64, 1, 4096, 1, move |p, v| set_tile(p, k, |t| t.width = v as u32));
                     f.stepper("Height", t.height as i64, 1, 4096, 1, move |p, v| set_tile(p, k, |t| t.height = v as u32));
@@ -97,6 +146,7 @@ impl PropertiesForm {
             Selection::Background(k) => {
                 if let Some(b) = p.backgrounds.get(k) {
                     f.heading("Background");
+                    f.readonly("UUID", b.id.to_string());
                     f.readonly("Name", if b.name.is_empty() { "—".into() } else { b.name.clone() });
                     f.stepper("Width", b.width as i64, 1, 8192, 1, move |p, v| {
                         if let Some(b) = p.backgrounds.get_mut(k) { b.width = v as u32; }
@@ -104,12 +154,20 @@ impl PropertiesForm {
                     f.stepper("Height", b.height as i64, 1, 8192, 1, move |p, v| {
                         if let Some(b) = p.backgrounds.get_mut(k) { b.height = v as u32; }
                     });
+                    let par = b.parallax;
+                    f.toggle("Parallax", par, move |p, on| {
+                        if let Some(b) = p.backgrounds.get_mut(k) { b.parallax = on; }
+                    });
+                    f.stepper("Z-Index", b.z_index as i64, -999, 999, 1, move |p, v| {
+                        if let Some(b) = p.backgrounds.get_mut(k) { b.z_index = v as i32; }
+                    });
                 }
             }
 
             Selection::Accessory(k) => {
                 if let Some(a) = p.accessories.get(k) {
                     f.heading("Accessory");
+                    f.readonly("UUID", a.id.to_string());
                     f.readonly("Name", if a.name.is_empty() { "—".into() } else { a.name.clone() });
                     f.stepper("Width", a.width as i64, 1, 8192, 1, move |p, v| {
                         if let Some(a) = p.accessories.get_mut(k) { a.width = v as u32; }
@@ -117,13 +175,6 @@ impl PropertiesForm {
                     f.stepper("Height", a.height as i64, 1, 8192, 1, move |p, v| {
                         if let Some(a) = p.accessories.get_mut(k) { a.height = v as u32; }
                     });
-                }
-            }
-
-            Selection::Animation(k) => {
-                if let Some(a) = p.animations.get(k) {
-                    f.heading("Animation");
-                    f.readonly("Frames", a.frames.len().to_string());
                 }
             }
 
@@ -209,6 +260,23 @@ impl PropertiesForm {
         });
         out
     }
+}
+
+fn blend_idx(m: BlendMode) -> usize {
+    BlendMode::ALL.iter().position(|x| *x == m).unwrap_or(0)
+}
+
+/// Recursive layer / group totals for a group (counts descendants).
+fn group_totals(p: &Project, g: GroupId) -> (usize, usize) {
+    let Some(gr) = p.groups.get(g) else { return (0, 0) };
+    let mut layers = gr.layers.len();
+    let mut groups = gr.groups.len();
+    for &c in &gr.groups {
+        let (l, gg) = group_totals(p, c);
+        layers += l;
+        groups += gg;
+    }
+    (layers, groups)
 }
 
 fn set_tile(p: &mut Project, k: TileId, f: impl FnOnce(&mut rustle_core::Tile)) {
@@ -314,10 +382,37 @@ impl Behavior for PropertiesForm {
         }
     }
 
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn keyboard_event(&mut self, ctx: &mut EventContext, event: KeyboardEvent) {
+        if self.nums.borrow_mut().on_key(&event, &self.editor) {
+            ctx.stop_propagation();
+        }
+    }
+
     fn pointer_event(&mut self, ctx: &mut EventContext, event: PointerEvent) {
         let b = ctx.ui.absolute_box(ctx.node);
+
+        match event {
+            PointerEvent::Move { x, .. } => {
+                if self.nums.borrow_mut().on_move(x, &self.editor) {
+                    ctx.stop_propagation();
+                }
+                return;
+            }
+            PointerEvent::Up { .. } => {
+                self.nums.borrow_mut().on_up();
+                return;
+            }
+            _ => {}
+        }
+
         if let PointerEvent::Down { button: MouseButton::Left, x, y } = event {
+            ctx.focus();
             let (lx, ly) = (x - b.x, y - b.y);
+            self.nums.borrow_mut().commit(&self.editor);
 
             if self.dd_open.get() {
                 let btn = self.dd_btn.get();
@@ -344,9 +439,16 @@ impl Behavior for PropertiesForm {
                 return;
             }
 
-            if let Some(act) = self.build(b.width).hit(lx, ly) {
-                self.editor.edit(|p| act(p));
-                ctx.stop_propagation();
+            match self.build(b.width).hit(lx, ly) {
+                Some(FormHit::Mut(m)) => {
+                    self.editor.edit(|p| m(p));
+                    ctx.stop_propagation();
+                }
+                Some(FormHit::Number(nh)) => {
+                    self.nums.borrow_mut().begin(nh, x, &self.editor);
+                    ctx.stop_propagation();
+                }
+                Some(FormHit::Signal(_)) | None => {}
             }
         }
     }

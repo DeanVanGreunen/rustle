@@ -5,12 +5,13 @@
 use std::any::Any;
 
 use rustle_core::{
-    EditorMode, LevelAccessory, LevelBackground, LevelTile, Project, Selection, Tool,
+    EditorMode, FrameId, LevelAccessory, LevelBackground, LevelTile, OnionSide, Project, Selection,
+    SpriteCanvas, Tool,
 };
 use rustle_ui::prelude::*;
 use rustle_ui::widgets::ViewportContent;
 
-use super::render::composite_canvas;
+use super::render::{composite_canvas, composite_frame_with_base};
 use super::theme::*;
 use super::Editor;
 
@@ -35,6 +36,8 @@ pub struct MainViewport {
     shape_end: Option<(f32, f32)>,
     /// Texel origin of an in-progress Text-tool edit.
     text_origin: Option<(f32, f32)>,
+    /// Onion-skin ghost cache: (signature, image) for prev / next.
+    onion: [Option<(u64, ImageData, (u32, u32))>; 2],
 }
 
 impl MainViewport {
@@ -48,6 +51,7 @@ impl MainViewport {
             drag: Drag::None,
             shape_end: None,
             text_origin: None,
+            onion: [None, None],
         }
     }
 
@@ -166,6 +170,43 @@ impl MainViewport {
         });
     }
 
+    fn erase(&self, tx: f32, ty: f32) {
+        let size = self.editor.session(|s| s.tools.eraser.size.max(1) as i64).unwrap_or(1);
+        let clip = self.marquee_clip();
+        self.with_layer(|w, h, px| {
+            erase_stamp(px, w, h, tx.floor() as i64, ty.floor() as i64, size, clip)
+        });
+    }
+
+    fn erase_stroke(&self, a: (f32, f32), b: (f32, f32)) {
+        let size = self.editor.session(|s| s.tools.eraser.size.max(1) as i64).unwrap_or(1);
+        let clip = self.marquee_clip();
+        self.with_layer(|w, h, px| {
+            let (mut x0, mut y0) = (a.0.floor() as i64, a.1.floor() as i64);
+            let (x1, y1) = (b.0.floor() as i64, b.1.floor() as i64);
+            let dx = (x1 - x0).abs();
+            let dy = -(y1 - y0).abs();
+            let sx = if x0 < x1 { 1 } else { -1 };
+            let sy = if y0 < y1 { 1 } else { -1 };
+            let mut err = dx + dy;
+            loop {
+                erase_stamp(px, w, h, x0, y0, size, clip);
+                if x0 == x1 && y0 == y1 {
+                    break;
+                }
+                let e2 = 2 * err;
+                if e2 >= dy {
+                    err += dy;
+                    x0 += sx;
+                }
+                if e2 <= dx {
+                    err += dx;
+                    y0 += sy;
+                }
+            }
+        });
+    }
+
     fn paint_stroke(&self, a: (f32, f32), b: (f32, f32)) {
         let (fg, size) = (self.fg(), self.brush_size());
         let clip = self.marquee_clip();
@@ -237,44 +278,64 @@ impl MainViewport {
         }
     }
 
-    fn flood_fill(&self, tx: f32, ty: f32) {
-        let fg = self.fg();
+    fn flood_fill(&mut self, tx: f32, ty: f32) {
+        // The region is chosen from the merged image the user actually
+        // sees; the fill is written to the active layer only.
+        self.ensure_composite();
+        let fg = self.editor.session(|s| s.colors.foreground).unwrap_or([0, 0, 0, 255]);
         let tol = self.editor.session(|s| s.tools.fill.tolerance as i32).unwrap_or(0);
         let contiguous = self.editor.session(|s| s.tools.fill.contiguous).unwrap_or(true);
         let clip = self.marquee_clip();
+
+        let Some((sw, sh, sbuf)) = self
+            .cache
+            .as_ref()
+            .map(|img| (img.width() as i64, img.height() as i64, img.rgba().to_vec()))
+        else {
+            return;
+        };
+        let (sx, sy) = (tx.floor() as i64, ty.floor() as i64);
+        if sx < 0 || sy < 0 || sx >= sw || sy >= sh {
+            return;
+        }
+        let at = |x: i64, y: i64| {
+            let i = ((y * sw + x) * 4) as usize;
+            [sbuf[i], sbuf[i + 1], sbuf[i + 2], sbuf[i + 3]]
+        };
+        let target = at(sx, sy);
+        let matches = |c: [u8; 4]| (0..4).all(|k| (c[k] as i32 - target[k] as i32).abs() <= tol);
+
+        // Mask of pixels sharing the clicked colour (within tolerance).
+        let mut mask = vec![false; (sw * sh) as usize];
+        if contiguous {
+            let mut stack = vec![(sx, sy)];
+            while let Some((x, y)) = stack.pop() {
+                if x < 0 || y < 0 || x >= sw || y >= sh {
+                    continue;
+                }
+                let idx = (y * sw + x) as usize;
+                if mask[idx] || !clip.allows(x, y) || !matches(at(x, y)) {
+                    continue;
+                }
+                mask[idx] = true;
+                stack.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]);
+            }
+        } else {
+            for y in 0..sh {
+                for x in 0..sw {
+                    if clip.allows(x, y) && matches(at(x, y)) {
+                        mask[(y * sw + x) as usize] = true;
+                    }
+                }
+            }
+        }
+
         self.with_layer(|w, h, px| {
             let (w, h) = (w as i64, h as i64);
-            let (sx, sy) = (tx.floor() as i64, ty.floor() as i64);
-            if sx < 0 || sy < 0 || sx >= w || sy >= h {
-                return;
-            }
-            let at = |px: &[u8], x: i64, y: i64| {
-                let i = ((y * w + x) * 4) as usize;
-                [px[i], px[i + 1], px[i + 2], px[i + 3]]
-            };
-            let target = at(px, sx, sy);
-            let matches = |c: [u8; 4]| {
-                (0..4).all(|k| (c[k] as i32 - target[k] as i32).abs() <= tol)
-            };
-            if matches(fg) {
-                return;
-            }
-            if contiguous {
-                let mut stack = vec![(sx, sy)];
-                while let Some((x, y)) = stack.pop() {
-                    if x < 0 || y < 0 || x >= w || y >= h || !clip.allows(x, y) || !matches(at(px, x, y))
-                    {
-                        continue;
-                    }
-                    put(px, w as u32, h as u32, x, y, fg, clip);
-                    stack.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]);
-                }
-            } else {
-                for y in 0..h {
-                    for x in 0..w {
-                        if clip.allows(x, y) && matches(at(px, x, y)) {
-                            put(px, w as u32, h as u32, x, y, fg, clip);
-                        }
+            for y in 0..h.min(sh) {
+                for x in 0..w.min(sw) {
+                    if mask[(y * sw + x) as usize] {
+                        put(px, w as u32, h as u32, x, y, fg, clip);
                     }
                 }
             }
@@ -317,13 +378,16 @@ impl MainViewport {
     }
 
     fn move_selected(&self, tx: f32, ty: f32, grab: (f32, f32)) {
-        let snap = self.editor.session(|s| s.tools.move_.snap).unwrap_or(false);
-        let step = self.editor.session(|s| s.tools.move_.snap_step.max(1) as f32).unwrap_or(1.0);
+        let (grid_on, gw, gh) = self
+            .editor
+            .session(|s| (s.grid.enabled, s.grid.width.max(1) as f32, s.grid.height.max(1) as f32))
+            .unwrap_or((false, 1.0, 1.0));
+        let tool_snap = self.editor.session(|s| s.tools.move_.snap).unwrap_or(false);
         let mut nx = tx - grab.0;
         let mut ny = ty - grab.1;
-        if snap {
-            nx = (nx / step).round() * step;
-            ny = (ny / step).round() * step;
+        if grid_on || tool_snap {
+            nx = (nx / gw).round() * gw;
+            ny = (ny / gh).round() * gh;
         }
         let sel = self.editor.selection();
         self.editor.edit(|p| match sel {
@@ -349,26 +413,185 @@ impl MainViewport {
         });
     }
 
+    /// When a sprite / canvas has just been opened, recentre the view and
+    /// zoom so the artwork fills the viewport with an 8px margin.
+    fn maybe_fit(&mut self, bounds: Rect) {
+        if !self.editor.fit_request.get() {
+            return;
+        }
+        self.ensure_composite();
+        let (cw, ch) = self.canvas;
+        if self.cache.is_none() || cw == 0 || ch == 0 {
+            return;
+        }
+        self.editor.fit_request.set(false);
+        let margin = 8.0;
+        let avail_w = (bounds.width - margin * 2.0).max(1.0);
+        let avail_h = (bounds.height - margin * 2.0).max(1.0);
+        let z = (avail_w / cw as f32).min(avail_h / ch as f32).clamp(0.05, 64.0);
+        let pan_x = (bounds.x + (bounds.width - cw as f32 * z) * 0.5).round();
+        let pan_y = (bounds.y + (bounds.height - ch as f32 * z) * 0.5).round();
+        self.editor.edit_session(|s| {
+            s.main_view.zoom = z;
+            s.main_view.pan_x = pan_x;
+            s.main_view.pan_y = pan_y;
+        });
+    }
+
     fn draw_pixels(&mut self, r: &mut Renderer, bounds: Rect) {
         self.ensure_composite();
         let (z, px, py) = self.view();
-        checkerboard(r, bounds, 8.0);
+        // Dark surround; the checkerboard only shows through the artwork.
+        r.fill_rect(bounds, Color::hex(0x3F3F3F));
 
-        let Some(img) = &self.cache else {
+        let (cw, ch) = self.canvas;
+        let have_img = self.cache.is_some();
+        // Snap to the screen pixel grid so every texel is a crisp square
+        // of `z` device pixels (nearest-neighbour sampling in the backend).
+        let ox = px.round();
+        let oy = py.round();
+        let dw = if have_img { (cw as f32 * z).round() } else { 0.0 };
+        let dh = if have_img { (ch as f32 * z).round() } else { 0.0 };
+        let dst = Rect::new(ox, oy, dw, dh);
+
+        if have_img {
+            r.push_clip(dst);
+            checkerboard(r, dst, 8.0);
+            r.pop_clip();
+        }
+
+        self.ensure_onion();
+
+        // Ghosts that draw under the current frame.
+        self.draw_onion(r, ox, oy, z, OnionSide::Below);
+
+        if let Some(img) = &self.cache {
+            r.image(dst, img);
+            for (x, y, w, h) in [
+                (dst.x, dst.y, dst.width, 1.0),
+                (dst.x, dst.y + dst.height - 1.0, dst.width, 1.0),
+                (dst.x, dst.y, 1.0, dst.height),
+                (dst.x + dst.width - 1.0, dst.y, 1.0, dst.height),
+            ] {
+                r.fill_rect(Rect::new(x, y, w, h), FAINT);
+            }
+        } else {
             text(r, "Nothing to display", 16.0, 16.0, 12.0, DIM);
+        }
+
+        // Ghosts that draw over the current frame.
+        self.draw_onion(r, ox, oy, z, OnionSide::Above);
+
+        self.draw_grid(r, bounds, px, py, z);
+    }
+
+    /// Prev / next animation frames around the active one.
+    fn onion_neighbours(&self) -> (Option<FrameId>, Option<FrameId>) {
+        self.editor
+            .with_project(|p| {
+                let SpriteCanvas::Frame(cur) = p.session.active.canvas else {
+                    return (None, None);
+                };
+                let Some(anim) = p.session.active.animation.and_then(|k| p.animations.get(k)) else {
+                    return (None, None);
+                };
+                let frames: Vec<FrameId> = anim.frames.iter().copied().collect();
+                let Some(i) = frames.iter().position(|&f| f == cur) else {
+                    return (None, None);
+                };
+                (
+                    i.checked_sub(1).and_then(|j| frames.get(j).copied()),
+                    frames.get(i + 1).copied(),
+                )
+            })
+            .unwrap_or((None, None))
+    }
+
+    fn ensure_onion(&mut self) {
+        let Some((on, prev_on, next_on, pc, nc, opacity)) = self.editor.session(|s| {
+            let o = s.onion;
+            (o.enabled, o.prev_enabled, o.next_enabled, o.prev_color, o.next_color, o.opacity)
+        }) else {
+            self.onion = [None, None];
             return;
         };
-        let (cw, ch) = self.canvas;
-        let dst = Rect::new(px, py, cw as f32 * z, ch as f32 * z);
-        r.image(dst, img);
-        // canvas border
-        for (x, y, w, h) in [
-            (dst.x, dst.y, dst.width, 1.0),
-            (dst.x, dst.y + dst.height - 1.0, dst.width, 1.0),
-            (dst.x, dst.y, 1.0, dst.height),
-            (dst.x + dst.width - 1.0, dst.y, 1.0, dst.height),
+        if !on || self.kind == EditorMode::Level {
+            self.onion = [None, None];
+            return;
+        }
+        let (prev, next) = self.onion_neighbours();
+        let rev = self.editor.revision.get();
+        let a = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
+
+        for (slot, frame, col, want) in [
+            (0usize, prev, pc, prev_on),
+            (1usize, next, nc, next_on),
         ] {
-            r.fill_rect(Rect::new(x, y, w, h), FAINT);
+            if frame.is_none() || !want {
+                self.onion[slot] = None;
+                continue;
+            }
+            let sig = rev
+                ^ (slot as u64)
+                ^ ((col[0] as u64) << 24 | (col[1] as u64) << 16 | (col[2] as u64) << 8 | a as u64);
+            if matches!(&self.onion[slot], Some((cs, ..)) if *cs == sig) {
+                continue;
+            }
+            let ghost = frame.and_then(|f| {
+                self.editor
+                    .with_project(|p| composite_frame_with_base(p, f, p.session.active.sprite))
+                    .flatten()
+            });
+            self.onion[slot] = ghost.map(|(w, h, buf)| {
+                let mut tinted = vec![0u8; buf.len()];
+                for i in (0..buf.len()).step_by(4) {
+                    if buf[i + 3] > 0 {
+                        tinted[i] = col[0];
+                        tinted[i + 1] = col[1];
+                        tinted[i + 2] = col[2];
+                        tinted[i + 3] = a;
+                    }
+                }
+                (sig, ImageData::from_rgba(w, h, tinted), (w, h))
+            });
+        }
+    }
+
+    fn draw_onion(&self, r: &mut Renderer, ox: f32, oy: f32, z: f32, side: OnionSide) {
+        let sides = self.editor.session(|s| (s.onion.prev_side, s.onion.next_side)).unwrap_or((OnionSide::Below, OnionSide::Below));
+        for (slot, want_side) in [(0usize, sides.0), (1usize, sides.1)] {
+            if want_side != side {
+                continue;
+            }
+            if let Some((_, img, (w, h))) = &self.onion[slot] {
+                r.image(Rect::new(ox, oy, (*w as f32 * z).round(), (*h as f32 * z).round()), img);
+            }
+        }
+    }
+
+    fn draw_grid(&self, r: &mut Renderer, bounds: Rect, px: f32, py: f32, z: f32) {
+        let Some((on, gw, gh)) = self.editor.session(|s| (s.grid.enabled, s.grid.width.max(1), s.grid.height.max(1))) else {
+            return;
+        };
+        if !on {
+            return;
+        }
+        let sx = gw as f32 * z;
+        let sy = gh as f32 * z;
+        let col = Color::rgba(0.5, 0.5, 0.5, 0.35);
+        if sx >= 4.0 {
+            let mut gx = px.rem_euclid(sx);
+            while gx < bounds.width {
+                r.fill_rect(Rect::new(gx.round(), 0.0, 1.0, bounds.height), col);
+                gx += sx;
+            }
+        }
+        if sy >= 4.0 {
+            let mut gy = py.rem_euclid(sy);
+            while gy < bounds.height {
+                r.fill_rect(Rect::new(0.0, gy.round(), bounds.width, 1.0), col);
+                gy += sy;
+            }
         }
     }
 
@@ -376,20 +599,7 @@ impl MainViewport {
         let (z, px, py) = self.view();
         r.fill_rect(bounds, Color::hex(0x3a3a3a));
 
-        // grid
-        let step = 32.0 * z;
-        if step >= 6.0 {
-            let mut gx = px.rem_euclid(step);
-            while gx < bounds.width {
-                r.fill_rect(Rect::new(gx, 0.0, 1.0, bounds.height), Color::hex(0x454545));
-                gx += step;
-            }
-            let mut gy = py.rem_euclid(step);
-            while gy < bounds.height {
-                r.fill_rect(Rect::new(0.0, gy, bounds.width, 1.0), Color::hex(0x454545));
-                gy += step;
-            }
-        }
+        self.draw_grid(r, bounds, px, py, z);
 
         let sel = self.editor.selection();
         self.editor.with_project(|p| {
@@ -565,6 +775,20 @@ fn stamp(px: &mut [u8], w: u32, h: u32, cx: i64, cy: i64, size: i64, c: [u8; 4],
     }
 }
 
+/// Hard-clear a square brush footprint to fully transparent.
+fn erase_stamp(px: &mut [u8], w: u32, h: u32, cx: i64, cy: i64, size: i64, clip: Clip) {
+    let half = size / 2;
+    for y in cy - half..cy - half + size {
+        for x in cx - half..cx - half + size {
+            if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 || !clip.allows(x, y) {
+                continue;
+            }
+            let i = ((y * w as i64 + x) * 4) as usize;
+            px[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+        }
+    }
+}
+
 fn line(
     px: &mut [u8],
     w: u32,
@@ -616,6 +840,7 @@ impl ViewportContent for MainViewport {
         if self.kind == EditorMode::Level {
             self.draw_level(renderer, bounds);
         } else {
+            self.maybe_fit(bounds);
             self.draw_pixels(renderer, bounds);
         }
         self.draw_marquee(renderer);
@@ -652,7 +877,6 @@ impl ViewportContent for MainViewport {
 
     fn pointer_event(&mut self, event: PointerEvent, _bounds: Rect) -> bool {
         let tool = self.editor.tool();
-        let space = self.editor.input.borrow().space;
         let shift = self.editor.input.borrow().shift;
 
         match event {
@@ -661,15 +885,16 @@ impl ViewportContent for MainViewport {
                 self.zoom_about(x, y, f);
                 true
             }
+            // Middle-button drag pans the view.
+            PointerEvent::Down { button: MouseButton::Middle, x, y } => {
+                let (_, px, py) = self.view();
+                self.drag = Drag::Pan { start_pan: (px, py), start_mouse: (x, y) };
+                true
+            }
             PointerEvent::Down { button: MouseButton::Left, x, y } => {
                 let (tx, ty) = self.texel(x, y);
                 self.editor.main_cursor.set((tx, ty));
 
-                if space {
-                    let (_, px, py) = self.view();
-                    self.drag = Drag::Pan { start_pan: (px, py), start_mouse: (x, y) };
-                    return true;
-                }
                 let pixels = self.kind != EditorMode::Level;
 
                 if self.text_origin.is_some() {
@@ -691,6 +916,10 @@ impl ViewportContent for MainViewport {
                         self.drag = Drag::Paint { last: (tx, ty) };
                     }
                     Tool::Pencil => self.place_def(tx, ty),
+                    Tool::Eraser if pixels => {
+                        self.erase(tx, ty);
+                        self.drag = Drag::Paint { last: (tx, ty) };
+                    }
                     Tool::Eyedropper if pixels => self.sample(tx, ty),
                     Tool::Fill if pixels => self.flood_fill(tx, ty),
                     Tool::Line | Tool::Rectangle if pixels => {
@@ -741,7 +970,11 @@ impl ViewportContent for MainViewport {
                     }
                     Drag::Paint { last } => {
                         let l = *last;
-                        self.paint_stroke(l, (tx, ty));
+                        if self.editor.tool() == Tool::Eraser {
+                            self.erase_stroke(l, (tx, ty));
+                        } else {
+                            self.paint_stroke(l, (tx, ty));
+                        }
                         self.drag = Drag::Paint { last: (tx, ty) };
                         true
                     }

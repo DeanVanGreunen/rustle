@@ -20,6 +20,7 @@ pub fn tool_from_keycode(kc: macroquad::prelude::KeyCode) -> Option<Tool> {
         K::V => 'V',
         K::M => 'M',
         K::B => 'B',
+        K::E => 'E',
         K::I => 'I',
         K::Z => 'Z',
         K::H => 'H',
@@ -314,6 +315,12 @@ fn render_icon(tool: Tool) -> ImageData {
             c.fill_poly(&[(10.0, 38.0), (14.0, 30.0), (30.0, 14.0), (34.0, 18.0), (18.0, 34.0)]);
             c.fill_poly(&[(30.0, 14.0), (34.0, 10.0), (38.0, 14.0), (34.0, 18.0)]);
             c.fill_poly(&[(10.0, 38.0), (14.0, 36.0), (12.0, 40.0)]);
+        }
+        Tool::Eraser => {
+            // slanted eraser block with a divider between rubber and sleeve
+            c.fill_poly(&[(8.0, 34.0), (24.0, 12.0), (40.0, 12.0), (24.0, 34.0)]);
+            c.line(16.0, 23.0, 32.0, 23.0, 2.0);
+            c.line(8.0, 38.0, 26.0, 38.0, 3.0);
         }
         Tool::Eyedropper => {
             c.line(12.0, 36.0, 28.0, 20.0, 4.0);

@@ -1,0 +1,19 @@
+[package]
+name = "rustle_project"
+version = "0.1.0"
+edition = "2024"
+description = "Rustle .rustle binary project file: load, save, and backup."
+
+[lib]
+name = "rustle_project"
+path = "src/lib.rs"
+
+[dependencies]
+rustle_core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+slotmap = { version = "1.0.7", features = ["serde"] }
+rmp-serde = "1.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+sha1 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "5"

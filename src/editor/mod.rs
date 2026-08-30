@@ -16,10 +16,13 @@ use rustle_core::{EditorMode, Project, Selection, Session, Tool};
 
 mod colorpicker;
 mod details;
+mod dialogs;
 mod form;
+mod hsvpanel;
 pub mod io;
 mod mainview;
 mod newlevel;
+mod numinput;
 mod outline;
 mod projprops;
 mod preview;
@@ -48,7 +51,6 @@ pub struct InputSnapshot {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
-    pub space: bool,
     pub mouse_down: bool,
 }
 
@@ -63,6 +65,25 @@ pub enum MenuAction {
     Save,
     SaveAs,
     ProjectProps,
+}
+
+/// The user's answer to the "save before closing?" prompt.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuitChoice {
+    #[default]
+    None,
+    Save,
+    Discard,
+    Cancel,
+}
+
+/// Where a new group should be attached, raised by the outline's
+/// "+ Group" buttons and consumed by the New Group dialog.
+#[derive(Clone, Copy)]
+pub enum GroupTarget {
+    Base(rustle_core::SpriteEntity),
+    Frame(rustle_core::FrameId),
+    Group(rustle_core::GroupId),
 }
 
 const HISTORY_MAX: usize = 80;
@@ -105,6 +126,16 @@ pub struct Editor {
     pub clipboard: Rc<RefCell<Option<(u32, u32, Vec<u8>)>>>,
     /// Raised by the outline's "Add Level" button.
     pub new_level_open: Rc<Cell<bool>>,
+    /// Raised by the sprite outline's "New Sprite" button.
+    pub new_sprite_open: Rc<Cell<bool>>,
+    /// Raised by an entity's "Animations / New" button (carries the entity).
+    pub add_anim_open: Rc<Cell<Option<rustle_core::SpriteEntity>>>,
+    /// Raised by an animation's "+ Frame" button (carries the animation).
+    pub add_frame_open: Rc<Cell<Option<rustle_core::AnimationId>>>,
+    /// Raised by a "+ Group" button (carries where to attach the group).
+    pub add_group_open: Rc<Cell<Option<GroupTarget>>>,
+    /// Raised by the "Resize Canvas" control in the tool-props row.
+    pub resize_canvas_open: Rc<Cell<bool>>,
     /// True while the Text tool has an active edit caret (suppresses
     /// single-key shortcuts in the main loop).
     pub text_editing: Rc<Cell<bool>>,
@@ -112,6 +143,13 @@ pub struct Editor {
     pub menu_action: Rc<Cell<MenuAction>>,
     /// Raised by Project Properties.
     pub project_props_open: Rc<Cell<bool>>,
+    /// Raised when a sprite / canvas is opened: the main viewport should
+    /// recentre and zoom-to-fit on its next draw.
+    pub fit_request: Rc<Cell<bool>>,
+    /// Shown when the window is closed with unsaved changes.
+    pub quit_prompt: Rc<Cell<bool>>,
+    /// The user's answer to the quit prompt (consumed by the main loop).
+    pub quit_choice: Rc<Cell<QuitChoice>>,
     /// System font for the Text tool (may be unavailable).
     pub text_font: TextFont,
     hist: Rc<RefCell<History>>,
@@ -132,9 +170,17 @@ impl Editor {
             main_marquee: Rc::new(Cell::new(None)),
             clipboard: Rc::new(RefCell::new(None)),
             new_level_open: Rc::new(Cell::new(false)),
+            new_sprite_open: Rc::new(Cell::new(false)),
+            add_anim_open: Rc::new(Cell::new(None)),
+            add_frame_open: Rc::new(Cell::new(None)),
+            add_group_open: Rc::new(Cell::new(None)),
+            resize_canvas_open: Rc::new(Cell::new(false)),
             text_editing: Rc::new(Cell::new(false)),
             menu_action: Rc::new(Cell::new(MenuAction::None)),
             project_props_open: Rc::new(Cell::new(false)),
+            fit_request: Rc::new(Cell::new(false)),
+            quit_prompt: Rc::new(Cell::new(false)),
+            quit_choice: Rc::new(Cell::new(QuitChoice::None)),
             text_font: TextFont::load(),
             hist: Rc::new(RefCell::new(History::default())),
             generation: Rc::new(Cell::new(0)),
@@ -262,6 +308,7 @@ impl Editor {
             };
             sync_active_layer(p);
         });
+        self.fit_request.set(true);
     }
 
     pub fn show_canvas(&self, canvas: rustle_core::SpriteCanvas) {
@@ -269,9 +316,12 @@ impl Editor {
             p.session.active.canvas = canvas;
             if let rustle_core::SpriteCanvas::Frame(f) = canvas {
                 p.session.active.frame = Some(f);
+                p.restore_frame_layer(f);
+            } else {
+                sync_active_layer(p);
             }
-            sync_active_layer(p);
         });
+        self.fit_request.set(true);
     }
 
     /// Set the shown frame during animation playback: refreshes the
@@ -468,6 +518,8 @@ pub fn spawn_workspaces(ui: &mut UiTree, parent: NodeId, editor: &Editor) -> [No
 pub fn spawn_dialogs(ui: &mut UiTree, root: NodeId, editor: &Editor) {
     newlevel::spawn_new_level_dialog(ui, root, editor);
     projprops::spawn_project_props_dialog(ui, root, editor);
+    dialogs::spawn_sprite_dialogs(ui, root, editor);
+    dialogs::spawn_quit_prompt(ui, root, editor);
 }
 
 fn spawn_workspace(ui: &mut UiTree, parent: NodeId, editor: &Editor, mode: EditorMode) -> NodeId {

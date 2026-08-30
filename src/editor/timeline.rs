@@ -60,6 +60,7 @@ impl AnimationTimeline {
             p.session.active.frame = Some(f);
             p.session.active.canvas = SpriteCanvas::Frame(f);
             p.session.selection = Selection::Frame(f);
+            p.restore_frame_layer(f);
         });
     }
 
@@ -100,6 +101,7 @@ impl AnimationTimeline {
             p.session.active.frame = Some(f);
             p.session.active.canvas = SpriteCanvas::Frame(f);
             p.session.selection = Selection::Frame(f);
+            p.restore_frame_layer(f);
         });
     }
 

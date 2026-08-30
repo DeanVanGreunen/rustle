@@ -7,6 +7,7 @@ edition = "2024"
 macroquad = "0.4.16"
 rustle_ui = { path = "../rustle_ui", features = ["macroquad"] }
 rustle_core = { path = "core" }
+rustle_project = { path = "project" }
 taffy = "0.13.0"
 rfd = "0.15"
 fontdue = "0.9"
